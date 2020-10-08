@@ -575,6 +575,7 @@
   [a b]
   (fn [t]
     (cond
+      (= t :tag) :line
       (= (float t) 0.0) a
       (= (float t) 1.0) b
       :else
@@ -594,6 +595,7 @@
         lines (map (partial apply brep-line) (partition 2 1 pts))]
     (fn [t]
       (cond 
+        (= t :tag) :polyline
         (= (float t) 0.0) (first pts)
         (= (float t) 1.0) (last pts)
         :else
@@ -615,6 +617,7 @@
         v (cross* n u)]
     (fn [t]
       (cond
+        (= t :tag) :circle
         (or (< t 0.0) (> t 1.0)) nil
         (= (float t) 0.0) a
         (= (float t) 1.0) a
