@@ -1,0 +1,1575 @@
+* ;;
+#+Title: forge
+#+SUBTITLE: build solid modeling programs
+#+AUTHOR: adam-james
+#+STARTUP: overview
+#+EXCLUDE_TAGS: nx
+#+PROPERTY: header-args :cache yes :noweb yes :results none :mkdirp yes :padline yes :async
+#+HTML_DOCTYPE: html5
+#+OPTIONS: toc:2 num:nil html-style:nil html-postamble:nil html-preamble:nil html5-fancy:t
+
+** deps.edn
+#+NAME: deps.edn
+#+begin_src clojure :tangle ./deps.edn
+{:deps 
+ {org.clojure/clojure            {:mvn/version "1.10.1"}
+  org.clojure/clojurescript      {:mvn/version "1.10.597"}
+  org.clojure/test.check         {:mvn/version "0.9.0"}
+  org.clojure/math.numeric-tower {:mvn/version "0.0.4"}
+  org.clojure/core.logic         {:mvn/version "0.8.11"}
+  occjava                        {:local/root  "./resources/occjava.jar"}}
+
+ :paths ["src" "resources"]
+
+ :aliases
+ {:base {:jvm-opts ["-Djava.library.path=/usr/local/lib:./resources:"]}}}
+
+#+end_src
+
+OCC works when clj is invoked with clj -A:base.
+
+* design
+** Introduction
+*** Pitch
+Forge is a powerful Design library that enhances the work of designers and engineers by providing a concise, powerful set of design documentation and creation tools.
+
+It works with the following flow:
+- create a text document
+- write your specs, design ideas, scope, and any other necessary documentation in plain text
+- enter code descriptions of all parts and assemblies in the same document, right with the documentation
+- Forge 'renders' this text document to an html file
+- view, interact with, change parameters, and export from this html file
+
+*** Emphasis and Values
+The design and implementation of Forge focuses heavily on:
+
+- Simplicity
+- Composition
+- Discipline
+- Documentation as Design
+- Pragmatic Correctness and Completeness
+- Open Source
+- User Empowerment
+
+*** Motivation
+Design is a difficult task for the craftsperson, and the tools should be as integral to the design work as any final components. At the same time, effective design is communicative of purpose, intent, and method. Designs solve problems as elegantly as possible, taking into primary consideration the context in which the design will live. With such a broad yet critical task, designers must be given the power to create solutions and build abstractions at every layer of their process; from tools to final design.
+
+Solid Modeling is fundamentally a method of communicating the form, function, and interactions of physical objects. Modern CAD programs are extremely powerful and expressive tools which facilitate effective capture of many design needs. Where CAD tools fall short is in expressiveness of parametric design needs, computational approaches to modeling, and reusability of complex and parametric assembly data.
+
+Instead of focusing on the direct manipulation of 3D objects in a user interface, forge favours flexibility and specificity by embracing the functional programming approach. Visual aids are critical for the proper understanding of a solid model, but a visual approach alone is insufficient for fully describing advanced design ideas or parametric aspects of a design. Forge effectively blends the visual elements of design with the expressive power of programming to empower designers to more fully communicate design intent and to enhance problem solving in general.
+
+*** What is Forge?
+Forge is a tool that embraces the dynamic and evolving nature of complexity in design by enabling engineers and designers to directly program their designs.
+
+Forge is a Clojure and ClojureScript library for building 3D modeling programs, inspired by [[https://libfive.com/][libfive]], [[http://www.openscad.org/][OpenSCAD]], and [[https://github.com/CadQuery/cadquery][CadQuery]].
+
+*** Intended Workflow
+The intended workflow of the Forge library is very simple and is meant to 'get out of the way' of designers and engineers.
+
+The following workflow is assumed to be 'fuzzy' at the transition boundaries from one phase to the next. Additionally, it should be assumed that iteration loops between any number of steps may need to occur. For example, it is often the case in real-world projects that the spec and design phases change dynamically even as programming nears completion. 
+
+**** Spec
+Write a specification document capturing the problem being solved and the intended scope of the solution being designed.
+
+**** Design
+Document the design in words, pictures, existing 3d models, links to other Forge documents, etc.
+For small projects, the spec and design steps can be combined, or even skipped altogether. It is, however, always recommended to at least provide a small explanation section prior to implementing any solutions, to give context to future users.
+
+**** Program
+Use all of the Clojure/Clojurescript ecosystem alongside the Forge library to implement scripts and programs that can produce a fully parametric solid model of all parts and assemblies for the design.
+
+This phase can additionally be used to add analytic modelling capabilities and advanced engineering calculations into the model directly using the built in Forge engineering capabilities or pairing with external math, numerics, solver, and AI libraries. The limit is the user's imagination and confidence.
+
+**** Render
+Forge is used to read, parse, and compile the design document, which at this point is a full design journal of prose and code which all define the design.
+
+The output of this render process is a powerful html document that fully embeds the working model code alongside the text explaining the design. This is presented to the user as an 'interactive essay' where every part and assembly is shown in 3D and can be manipulated live. All programmed parameters become available as interface elements such as sliders, radio buttons, and drop-down menus where the user can dynamically change the displayed design.
+
+**** Export
+From within the rendered html, once a user is satisfied with any parameter changes and is confident the code is 'production ready', it is possible to export final files.
+
+If no commercial CAD software is available, Forge can serve as a perfectly viable commercial tool as it can fully render and export 2D drawing packages suitable for manufacturing.
+
+If designers wish to add or change designs in a tool they are familiar with, commercial CAD export options exist: STEP files (generic, safe export option), SW vba script files, Inventor vba script files, and AutoCAD LISP files are all producible. These scripts, when run in their appropriate software, will render a fully native part/assembly file.
+
+**** Iterate
+The design of a solution is fully described in text and code, and so is quick to change, fast to load, and easy to manipulate. With Forge's 'watch and render' capabilities, a very tight design loop is formed where the designer can create changes to text and code and see them reflected live in the rendered document. 
+
+This is excellent for design work which can be completed by an individual. Iteration however, often occurs over the course of days and weeks and includes many different stakeholders. Forge's intended workflow is designed so that the canonical design is always captured in the text. If a CAD file is lost, it can be re-produced easily from the text. If stakeholders make custom, one-time tweaks to CAD files or drawings, they do not 'filter back' and cause problems with the original design. 
+
+The 'change arrow' always occurs one way. txt -> html -> CAD
+This mono-directional change seems like a hinderance, but forces the user(s) to capture design intent at the lowest level, always ensuring correctness downstream.
+
+** Architecture
+The Forge library is architected around an idea of *functional layering.* Layering begins with a *kernel* of necessary functionality and wraps on additional functionality. Each added layer depends upon prior layers, but adds value to the unit as a whole. This implies that:
+ - a *kernel* is the minimum set of functionality that can provide value
+ - any layer on its own provides no utility, due to its dependence on prior layers
+
+The layering concept is useful at varying levels of abstraction and is used liberally throughout the Forge Library.
+
+*** Code Units
+Layering provides structure to *code units* which are well-designed sets of functions that provide utility in some context. 
+
+Extending the idea of a code unit is a *design document* which is a document that fully captures the problem, and the design intent of the unit. 
+
+It is not strictly necessary to realize every layer to produce a valid code unit, with the exception of the kernel. Nevertheless, a code unit becomes more valuable with each layer implemented.
+
+With this in mind, the layers of a code unit are as follows:
+ 
+ 1. *design*
+    A document explaining the need for the unit and the approach being taken to address it. A fully developed design will include elements familiar to engineers like a problem statement, assumptions, unknowns, constraints, and parameters.
+
+ 2. *kernel*
+    The set of functions that implement the required functionality. The most direct realization of an algorithm or procedure for meeting the requirements.
+
+ 3. *guard*
+    Validation functions or specs that ensure any data passed into the kernel is correctly shaped and logically correct according to the intended use cases. Error handling functions that protect and communicate errors that originate in the kernel.
+
+ 4. *instrumentation*
+    The set of functions that perform useful measurement tasks such as logging, debugging, and timing.
+
+ 5. *optimization*
+    The set of functions that can use additional logic to create functionally equivalent versions of data and/or functions that run more optimally than the default kernel.
+
+ 6. *interface*
+    The set of functions that wrap all prior layers into a package that can be appropriately and easily used by users. Different users may use different interfaces such as dev. and user interfaces.
+
+ 7. *test*
+    The set of functions which run unit tests on all prior layers as well as integration tests for the fully wrapped kernel.
+
+*** Library Structure
+The layering of the Forge Library begins at the *solid model* and extends up to the *test harness* layer.
+
+The layers:
+ 1. design
+ 2. solid model
+ 3. guard
+ 4. analytic model
+ 5. optimizer
+ 6. interface
+ 7. test harness
+
+**** design
+The design of the Forge Library is captured in the form of a literate program. In fact, it lives in this very document. Additional notes and diagrams are added into the project's directory and linked into this document as needed.
+
+**** solid model
+The solid model is a *script* using the *domain specific language (DSL)* provided by ~forge.lang~ to describe the shape and dimensions of an object. This is the minimum required element for creating a useful design with Forge. The DSL is embedded within Clojure/Clojurescript permitting full use of the entire Clojure ecosystem of libraries.
+
+User facing functions are geometric, transforms, constructive, topological, math, and utility functions which can all be used to accurately describe parts and assemblies. In all cases, the user is not required to consider the underlying implementation of any functions.
+
+A solid model is *executable*. When run, a solid model program will produce an *enriched abstract syntax tree (AST)* which forms the main data structure on which all subsequent layers operate.
+
+**** guard
+The guard layer provides *validation* of data entering the solid model and *error handling* to properly manage errors that occur when the solid model is executed.
+
+Beyond simple validation and error handling, Forge's guard layer consists of a parameter and constraint handling set of functions. These functions allow the user to specify many types of parametric relationships between dimensions and variables defined in the solid model, as well as constraints.
+
+If no guards are explicitly designed, the constraints and parameters default to be fixed at the intial values programmed into the solid model.
+
+**** analytic model
+The analytic model provides advanced functionality for describing high level requirements which are typically derived from engineering analysis considerations.
+
+The analytical model has two pathways for affecting the solid model: *interfacing* or *integrating*. 
+
+Interfacing is the simpler approach as it adjusts the model strictly through the guard layer; the results from an analysis run will only ever change parameter and constraint values.
+
+Integrating is a much more complex mode as it can directly alter the solid model's code. This may be desireable for highly complex logical transformations of a model based on a very involved analysis approach. It is more complex because changing the solid model necessarily requires that the analytic model has logic for updating the parameters and constraints in the guard layer.
+
+Both modes of analytic interaction are fully supported and encouraged by the Forge library.
+
+**** optimizer
+The optimizer is capable of altering the AST to improve on various key metrics such as generation speed, memory use, renderability, exportability, and complexity.
+
+The optimizer performs these improvements heuristically. It is important to allow the optimizer to be tuned appropriately for the use case because some optimizations may lead to lossy alterations. This is of particular importance for highly parametric designs as geometric simplification may accidentally erase design intent.
+
+The main optimizations focus on AST simplification by swapping nested structures for volumetrically equivalent flat calls.
+
+**** interface
+The interface layer has a high degree of optionality as it contains diverse functionality:
+ - graphical views
+ - GUI forms
+ - minimal viewers
+ - web app producers
+ - compilers/transpilers
+ - exporters
+
+All interface functionality is intended to be used as pieces for the designer to be able to build a program which can fully express the design intent of *all possible* variants of the design.
+
+**** test harness
+The guard layer is intended to handle data related validation and to enforce appropriate constraints and parameter limits, but it is not a sufficient layer for fully testing the entire design program. The test harness layer provides a suite of useful tests which can be run against any Forge prorgam.
+
+The test harness also provides a simple interface for designers to define their own tests and run them with the rest of the test suite.
+
+*** A Diagram
+To keep it all straight.
+
+#+begin_src text
+
+   design
+     doc
+      |
+      V
++-----------+
+|   solid   |<--(ns forge.lang)<-+--(ns forge.brep)
+|   model   |                     `-(ns forge.frep)
++-----------+
+      |
+      V
++-----------+
+|   guard   |<--(ns forge.guard)
+|           |
++-----------+
+      |
+      V
++-----------+
+| analytic  |<--(ns forge.analytic)
+|   model   |
++-----------+
+      |
+      V
++-----------+
+| optimizer |<--(ns forge.optimize)
+|           |
++-----------+
+      |
+      V                            ,-(ns forge.app)
++-----------+                     |--(ns forge.gui)
+| interface |<--(ns forge.build)<-+--(ns forge.impl)
+|           |                     |--(ns forge.view)
++-----------+                     |--(ns forge.compile)
+      |                            `-(ns forge.web)
+      V
++-----------+
+|   test    |<--(ns forge.test)
+|  harness  |
++-----------+
+      |
+      V
+ integration
+
+#+end_src
+* ns
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(ns forge.proto
+  (:require [forge.delaunay :as delaunay]))
+
+#+END_SRC
+
+* splines-proto
+try again with pomax's tutorials
+#+begin_src clojure
+(defn domain
+  [knots deg]
+  (let [e (- (count knots) 1 deg)]
+    [(nth knots deg) (nth knots e)]))
+
+(defn remap
+  [[s e] t]
+  (+ s (* t (- e s))))
+
+(defn inside?
+  [[a b] x]
+  (and (<= a x)
+       (> b x)))
+
+(defn section
+  [knots deg t]
+  (let [t (remap (domain knots deg) t)
+        spans (partition 2 1 knots)
+        mask (mapv #(inside? % t) spans)]
+    (count (take-while false? mask))))
+
+;; weight and unweight fns
+(defn weight
+  [pt wt]
+  (apply vector (conj (mapv * pt (repeat wt)) wt)))
+
+(defn unweight
+  [pt]
+  (if (> (last pt) 0)
+    (mapv / (drop-last pt) (repeat (last pt)))
+    (drop-last pt)))
+
+;; open uniform clamped knot vector
+(defn knots-ouc
+  [npts deg]
+  (let [s (repeat deg 0)
+        e (repeat deg 1)
+        step (/ 1 (dec (+ npts 1 (- deg))))
+        m (map float (range 0 (+ 1 step) step))]
+    (apply vector (concat s m e))))
+
+(defn deboor
+  [knots cpts deg t]
+  (let [s (section knots deg t)
+        d (atom (mapv #(nth cpts (+ % s (- deg))) (range (inc deg))))
+        nd (last 
+            (for [r (range 1 (inc deg))
+                  j (range deg (dec r) -1)]
+              (let [ka (nth knots (+ j s (- deg)))
+                    kb (nth knots (+ j s 1 (- r)))
+                    nr (- t ka)
+                    dr (- kb ka)
+                    alpha (/ nr dr)
+                    dj (nth @d j)
+                    dj-1 (nth @d (dec j))]
+                (swap! d #(assoc % j (mapv + 
+                                           (map * (repeat alpha) dj)
+                                           (map * (repeat (- 1 alpha)) dj-1)))))))]
+    (nth nd deg)))
+
+(defn -closed-spline
+  [cpts wts deg]
+  (let [tmp (mapv weight cpts wts)
+        wpts (apply vector (concat tmp (take (inc deg) tmp)))
+        knots (knots-ouc (count wpts) deg)]
+    (fn [t]
+      (unweight (deboor knots wpts deg t)))))
+
+(let [tau (* 2 Math/PI)]
+  (def ref-spline-data
+    {:knots (knots-ouc 10 3)
+     :cpts 
+     #_[[10 10] [20 600] [120 600] [150 400] [200 10] [300 700] [400 600] [450 400] [500 200] [650 10]]
+     (mapv #(vector (+ 500 (* 100 (Math/cos %))) 
+                    (+ 500 (* 100 (Math/sin %)))) 
+           (range 0 tau (/ tau 10)))
+     :wts [1 4 1 4 1 4 1 4 1 4]
+     :deg 3}))
+
+(defn -spline
+  [cpts wts deg]
+  (let [knots (knots-ouc (count cpts) deg)
+        wpts (mapv weight cpts wts)]
+    (fn [t]
+      (unweight (deboor knots wpts deg t)))))
+
+(let [tau (* 2 Math/PI)]
+  (def ref-spline-data
+    {:knots (knots-ouc 10 3)
+     :cpts 
+     #_[[10 10] [20 600] [120 600] [150 400] [200 10] [300 700] [400 600] [450 400] [500 200] [650 10]]
+     (mapv #(vector (+ 500 (* 100 (Math/cos %))) 
+                    (+ 500 (* 100 (Math/sin %)))) 
+           (range 0 tau (/ tau 10)))
+     :wts [1 1 1 1 1 1 1 1 1 1]
+     :deg 3}))
+
+(def sp (-closed-spline (:cpts ref-spline-data) (:wts ref-spline-data) (:deg ref-spline-data)))
+
+#+end_src
+
+* offset-proto
+#+begin_src clojure
+;; this should be improved
+;; currently can cause divide by zero issues
+(defn line-intersection
+  [[a b] [c d]]
+  (let [[ax ay] a
+        [bx by] b
+        [cx cy] c
+        [dx dy] d
+        xdiff [(- ax bx) (- cx dx)]
+        ydiff [(- ay by) (- cy dy)]
+        div (g/det xdiff ydiff)
+        d [(g/det a b) (g/det c d)]
+        x (/ (g/det d xdiff) div)
+        y (/ (g/det d ydiff) div)]
+    [x y]))
+
+(defn offset-edge
+  [[a b] d]
+  (let [p (perpendicular (mapv - b a))
+        pd (map * (normalize p) (repeat (- d)))
+        xa (mapv + a pd)
+        xb (mapv + b pd)]
+    [xa xb]))
+
+(defn cycle-pairs
+  [pts]
+  (let [n (count pts)]
+    (vec (take n (partition 2 1 (cycle pts))))))
+
+(defn every-other
+  [v]
+  (let [n (count v)]
+    (map #(get v %) (filter even? (range n)))))
+
+(defn wrap-list-once
+  [s]
+  (conj (drop-last s) (last s)))
+
+(defn offset
+  [pts d]
+  (let [edges (cycle-pairs pts)
+        opts (mapcat #(offset-edge % d) edges)
+        oedges (every-other (cycle-pairs opts))
+        edge-pairs (cycle-pairs oedges)]
+    (wrap-list-once (map #(apply line-intersection %) edge-pairs))))
+
+#+end_src
+
+* triangulation
+This is (for now) a copy from:
+
+https://github.com/trystan/delaunay-triangulation
+
+I have to change this to work on 3D points. It currently drops any Z values.
+
+#+BEGIN_SRC clojure :tangle ./src/forge/delaunay.cljc
+(ns forge.delaunay
+  (:require [clojure.set]))
+
+;; move these to geom ns?
+(def abs #?(:clj #(Math/abs %)
+            :cljs #(js/Math.abs %)))
+
+(def pow #?(:clj #(Math/pow %1 %2)
+            :cljs #(Math/pow %1 %2)))
+
+
+(defn rand-int-pt
+  ([n]
+   (rand-int-pt n n))
+
+  ([nx ny]
+   [(rand-int nx) (rand-int ny)]))
+
+(defn random-points
+  ([n]
+   (random-points n n))
+
+  ([nx ny]
+   (repeatedly #(rand-int-pt nx ny))))
+
+(defn grid-points
+  [cell-x cell-y n-xcells n-ycells]
+  (for [nx (range n-xcells)
+        ny (range n-ycells)]
+    [(* cell-x nx) (* cell-y ny)]))
+
+;; https://gist.github.com/mutoo/5617691
+(defn circumscribe-triangle [[[ax ay] [bx by] [cx cy]]]
+  (let [A (- bx ax)
+        B (- by ay)
+        C (- cx ax)
+        D (- cy ay)
+        E (+ (* A (+ ax bx)) (* B (+ ay by)))
+        F (+ (* C (+ ax cx)) (* D (+ ay cy)))
+        G (* 2 (- (* A (- cy by)) (* B (- cx bx))))]
+    (when (> (abs G) 0.000001)
+      (let [cx (/ (- (* D E) (* B F)) G)
+            cy (/ (- (* A F) (* C E)) G)
+            dx (- cx ax)
+            dy (- cy ay)
+            r  (+ (pow dx 2) (pow dy 2))]
+        {:x cx :y cy :radius-squared r}))))
+
+(defn edges [[p1 p2 p3]] [[p1 p2] [p2 p3] [p3 p1]])
+
+(defn contains-point? [{:keys [x y radius-squared]} [px py]]
+  (let [distance-squared (+ (pow (- x px) 2) (pow (- y py) 2))]
+    (< distance-squared radius-squared)))
+
+(defn outer-edges [triangles]
+  (let [all-edges    (mapcat edges triangles)
+        matches      (fn [edge] (filter #{edge (reverse edge)} all-edges))
+        appears-once (fn [edge] (= (count (matches edge)) 1))]
+    (filter appears-once all-edges)))
+
+(defn make-new-triangles [containers point]
+  (->> containers
+       outer-edges
+       (map (fn [[p1 p2]] [p1 p2 point]))
+       set))
+
+(defn add-point-to-triangles [triangles point]
+  (let [containers    (filter #(contains-point? (circumscribe-triangle %) point) triangles)
+        new-triangles (make-new-triangles containers point)]
+    (clojure.set/union (clojure.set/difference triangles containers) new-triangles)))
+
+(defn bounds [points]
+  (let [minx (->> points (map first) (apply min) (+ -1000))
+        maxx (->> points (map first) (apply max) (+ 1000))
+        miny (->> points (map second) (apply min) (+ -1000))
+        maxy (->> points (map second) (apply max) (+ 1000))]
+    [[minx maxy] [maxx maxy] [minx miny] [maxx miny]]))
+
+;; http://paulbourke.net/papers/triangulate/
+(defn triangulate [points]
+  (let [points (map (fn [[x y]] [(float x) (float y)]) points)
+        [tl tr bl br] (bounds points)
+        initial #{[tl tr bl] [bl tr br]}
+        with-bounds (reduce add-point-to-triangles initial points)
+        triangles (remove #(some #{tl tr bl br} %) with-bounds)]
+    {:points points
+     :triangles triangles
+     :edges (distinct (mapcat edges triangles))}))
+
+#+END_SRC
+* math-geom
+Use the util namespace to place functions which may be used across the other namespaces. Currently the util namespace contains mostly geometry calculation functions like checks for lines and points.
+
+** comparing-floats
+This is a strangely complicated topic, and I want to implement my own functions to help compare float/double numbers to one another.
+
+This is mostly necessary for comparing two equal-length collections of float values. This pops up a lot when doing geometry calculations due to vector and matrix operations, which are represented with [Clojure vectors] in Forge.
+
+Since I will also need to check if float values are near zero, I'll have a special function specifically for that. This is necessary because of how floating point values are represented. The zero case is special, so I have a function for it.
+
+NOTE: Provide more clear explanation about floating point comparisons AND my implementation choice. In particular, talk about relativeMax and why I did NOT use ULP methods.
+
+The implementation is taken from:
+[[https://floating-point-gui.de/errors/NearlyEqualsTest.java]]
+
+This, like any float comparison implementation, is not guaranteed to be useful in all contexts.
+
+It is sufficient for Forge for the following reasons:
+- it is used near zero most often
+- it is unlikely to be used when handling values much larger than 10,000 in magnitude due to typical scales of units in engineering projects.
+
+#+begin_src clojure :tangle ./src/forge/proto.cljc
+(defn nearly?
+  "compare two float values for approximate equality.
+   
+   Default epsilon = 0.00001"
+  ([a b]
+   (nearly? a b 0.00001))
+
+  ([a b epsilon]
+   (let [a (float a)
+         b (float b)]
+     (if (= a b)
+       true
+       (let [absA (Math/abs a)
+             absB (Math/abs b)
+             diff (Math/abs (- a b))
+             min-f 1.17549435E-38
+             max-f 3.4028235E38]
+         (if (or (= a 0.0) 
+                 (= b 0.0) 
+                 (< (+ absA absB) min-f))
+           (< diff (* epsilon min-f))
+           (< (/ diff (Math/min (+ absA absB) max-f)) epsilon)))))))
+
+(defn all-nearly?
+  "check if all numbers are nearly equal to one another in two collections"
+  [coll-a coll-b]
+  (if (not (= (count coll-a) (count coll-b)))
+    #?(:clj  (throw (Exception. "collections must be same size."))
+       :cljs (throw (js/Error. "collections must be same size.")))
+    (empty? (filter false? (map nearly? coll-a coll-b)))))
+
+#+end_src
+
+To make sure float checks work, I'm implementing unit tests.
+
+The tests here are taken from:
+[[https://floating-point-gui.de/errors/NearlyEqualsTest.java]]
+
+and re-implemented with clojure.test library.
+
+*** float-comparison-tests
+#+begin_src clojure
+(deftest nearly-test
+  (testing "Regular large numbers"
+    (is      (nearly? (float 1000000) (float 1000001)))
+    (is      (nearly? (float 1000001) (float 1000000)))
+    (is (not (nearly? (float 10000) (float 10001))))
+    (is (not (nearly? (float 10001) (float 10000)))))
+  (testing "Negative large numbers"
+    (is      (nearly? (float -1000000) (float -1000001)))
+    (is      (nearly? (float -1000001) (float -1000000)))
+    (is (not (nearly? (float -10000) (float -10001))))
+    (is (not (nearly? (float -10001) (float -10000)))))
+  (testing "Numbers around 1"
+    (is      (nearly? (float 1.0000001) (float 1.0000002)))
+    (is      (nearly? (float 1.0000002) (float 1.0000001)))
+    (is (not (nearly? (float 1.0001) (float 1.0002))))
+    (is (not (nearly? (float 1.0002) (float 1.0001)))))
+  (testing "Numbers around -1"
+    (is      (nearly? (float -1.0000001) (float -1.0000002)))
+    (is      (nearly? (float -1.0000002) (float -1.0000001)))
+    (is (not (nearly? (float -1.0001) (float -1.0002))))
+    (is (not (nearly? (float -1.0002) (float -1.0001)))))
+  (testing "Numbers between 1 and 0"
+    (is      (nearly? (float 0.000000001000001) (float 0.000000001000002)))
+    (is      (nearly? (float 0.000000001000002) (float 0.000000001000001)))
+    (is (not (nearly? (float 0.000000000001001) (float 0.000000000001002))))
+    (is (not (nearly? (float 0.000000000001002) (float 0.000000000001001)))))
+  (testing "Numbers between -1 and 0"
+    (is      (nearly? (float -0.000000001000001) (float -0.000000001000002)))
+    (is      (nearly? (float -0.000000001000002) (float -0.000000001000001)))
+    (is (not (nearly? (float -0.000000000001001) (float -0.000000000001002))))
+    (is (not (nearly? (float -0.000000000001002) (float -0.000000000001001)))))
+  (testing "Small differences away from zero"
+    (is (nearly? (float 0.3) (float 0.30000003)))
+    (is (nearly? (float -0.3) (float -0.30000003))))
+  (testing "Comparisons involving zero"
+    (is      (nearly? (float 0.0) (float 0.0)))
+    (is      (nearly? (float 0.0) (float -0.0)))
+    (is      (nearly? (float -0.0) (float -0.0)))
+    (is (not (nearly? (float 0.00000001) (float 0.0))))
+    (is (not (nearly? (float 0.0) (float 0.00000001))))
+    (is (not (nearly? (float -0.00000001) (float 0.0))))
+    (is (not (nearly? (float 0.0) (float -0.00000001))))
+    (is      (nearly? (float 0.0) (float 1e-40) (float 0.01)))
+    (is      (nearly? (float 1e-40) (float 0.0) (float 0.01)))
+    (is (not (nearly? (float 0.0) (float 1e-40) (float 0.000001))))
+    (is (not (nearly? (float 1e-40) (float 0.0) (float 0.000001))))
+    (is      (nearly? (float 0.0) (float -1e-40) (float 0.1)))
+    (is      (nearly? (float -1e-40) (float 0.0) (float 0.1)))
+    (is (not (nearly? (float 0.0) (float -1e-40) (float 0.00000001))))
+    (is (not (nearly? (float -1e-40) (float 0.0) (float 0.00000001))))))
+
+#+end_src
+
+** math-utils
+#+begin_src clojure :tangle ./src/forge/proto.cljc
+(defn to-deg
+  [rad]
+  (* rad (/ 180 Math/PI)))
+
+(defn to-rad
+  [deg]
+  (* deg (/ Math/PI 180)))
+
+(defn round
+  [num places]
+  (let [d (Math/pow 10 places)]
+    (/ (Math/round (* num d)) d)))
+
+(defn sign
+  "returns -1 if x is less than 0, 0 if x is 0 and 1 if x is greater"
+  [x]
+  (cond
+    (or (= 0.0 x) (= 0 x)) 0
+    (< 0 x) 1
+    (> 0 x) -1))
+
+(defn average
+  [& numbers]
+  (let [n (count numbers)]
+    (/ (apply + numbers) n)))
+
+(defn sq
+  [x]
+  (* x x))
+
+(defn clamp
+  "clamps a value between lower bound and upper bound"
+  [x lb ub]
+  (cond
+    (< x lb) lb
+    (> x ub) ub
+    :else x))
+
+#+end_src
+
+** vector-arithmetic
+#+begin_src clojure :tangle ./src/forge/proto.cljc
+(def v+ (partial mapv +))
+(def v- (partial mapv -))
+(def v* (partial mapv *))
+#+end_src
+
+** list-manipulations
+#+begin_src clojure :tangle ./src/forge/proto.cljc
+(defn vec-diff
+  "returns the collection difference of two vectors"
+  [v1 v2]
+  (vec (into #{} (concat v1 v2))))
+
+(defn vec-inner-pop
+  "pop the item at index from the collection"
+  [coll ind]
+  (into [] (conj (subvec coll 0 ind) (subvec coll (inc ind)))))
+
+(defn push-new
+  "push item onto vector if it doesn't already exist."
+  [v n]
+  (if (some #{n} v)
+    v
+    (conj v n)))
+
+(defn concat-new
+  "concat two vectors together pushing only unique items."
+  [a b]
+  (reduce push-new a b)) 
+
+(defn position
+  "returns index of first match to item in the src vector. Otherwise nil"
+  [src item]
+  (let [res (.indexOf src item)]
+    (if (>= res 0)
+      res
+      nil)))
+
+(defn link
+  "Swap an item for it's index in a different list"
+  [src item]
+  (let [type-k (first item)
+        vals (rest item)]
+    (vec (conj (map #(position src %) vals) type-k))))
+
+(defn unlink
+  "Swap an item's idx for it's value in a different list"
+  [src item]
+  (let [type-k (first item)
+        indices (rest item)]
+    (vec (conj (map #((vec src) %) indices) type-k))))
+
+#+end_src
+
+** geometry-calculations
+#+begin_src clojure :tangle ./src/forge/proto.cljc
+(defn slope-2d
+  [a b]
+  (let [[x1 y1] a
+        [x2 y2] b]
+    (/ (- y2 y1) (- x2 x1))))
+
+(defn perpendicular-2d
+  [[x y]]
+  [(- y) x])
+
+(defn determinant-2d
+  [a b]
+  (- (* (first a) (second b))
+     (* (second a) (first b))))
+
+(defn dot*
+  "calculates the dot product of two vectors"
+  [a b]
+  (reduce + (map * a b)))
+
+(defn cross*
+  "calculates cross product of two 3d-vectors"
+  [a b]
+  (let [[a1 a2 a3] a
+        [b1 b2 b3] b
+        i (- (* a2 b3) (* a3 b2))
+        j (- (* a3 b1) (* a1 b3))
+        k (- (* a1 b2) (* a2 b1))]
+    [i j k]))
+
+(defn distance
+  "compute distance between two points"
+  [a b]
+  (let [v (v- b a)
+        v2 (reduce + (v* v v))]
+    (Math/sqrt v2)))
+
+(defn normalize
+  "find the unit vector of a given vector"
+  [v]
+  (let [m (Math/sqrt (reduce + (v* v v)))]
+    (mapv / v (repeat m))))
+
+(defn on-line?
+  "determine if a point is on a capped line"
+  [pt line]
+  (let [[a b] line
+        ap (mapv - a pt)
+        bp (mapv - b pt)]
+    (if (or (all-nearly? pt a) 
+            (all-nearly? pt b))
+      true
+      (let [na (normalize ap)
+            nb (normalize bp)]
+        (and 
+             (all-nearly? (cross* ap bp) [0 0 0]) 
+             (not (all-nearly? na nb)))))))
+
+(defn on-line-inf?
+  "determine if a point is on an infinitely extending line"
+  [pt line]
+  (let [[a b] line
+        ap (mapv - a pt)
+        bp (mapv - b pt)]
+    (all-nearly? (cross* ap bp) [0 0 0])))
+
+#+end_src
+
+** 3-points-algorithms
+#+begin_src clojure :tangle ./src/forge/proto.cljc
+(defn normal
+  "find normal vector of plane given 3 points"
+  [a b c]
+  (let [ab (mapv - a b)
+        ac (mapv - a c)]
+    (if (on-line? c [a b]) nil (cross* ab ac))))
+
+(defn on-plane?
+  "determine if a point is on a plane"
+  [pt plane]
+  (let [a (map - pt (first plane))
+        n (normal (first plane) (second plane) (nth plane 2))]
+    (nearly? (Math/abs (dot* a n)) 0)))
+
+(defn plane-triple
+  "gets a list of 3 points on a plane from a list of points"
+  [pts]
+  (if (< (count pts) 3) nil
+    (let [[a b c] pts]
+      (if (on-line? c [a b]) 
+        (plane-triple (vec-inner-pop pts 2))
+        [a b c]))))
+
+(defn planar?
+  "checks if all points in a list share a plane"
+  [pts]
+  (cond
+    (< (count pts) 3) false
+    (= (count pts) 3) (let [a (first pts)
+                            b (second pts)
+                            c (nth pts 2)]
+                        (if (on-line? c [a b]) false true))
+    :else (let [plane (plane-triple pts)
+                chk-pts (vec-diff plane pts)]
+            (every? #(= % true) (mapv #(on-plane? % plane) chk-pts)))))
+
+(defn radius-from-pts
+  "compute the radius of an arc defined by 3 points"
+  [p1 p2 p3]
+  (when-not (on-line? p1 [p2 p3])
+    (let [a (distance p3 p2)
+          b (distance p3 p1)
+          c (distance p2 p1)
+          s (/ (+ a b c) 2)
+          sa ( - s a)
+          sb ( - s b)
+          sc ( - s c)
+          rt (Math/sqrt (* s sa sb sc))
+          R (/ (/ (* a b c) 4) rt)]
+      R)))
+
+;; https://math.stackexchange.com/questions/361412/finding-the-angle-between-three-points
+(defn angle-from-pts
+  [p1 p2 p3]
+  (let [v1 (v- p1 p2)
+        v2 (v- p3 p2)
+        l1 (distance p1 p2)
+        l2 (distance p3 p2)
+        n (dot* v1 v2)
+        d (Math/abs (* l1 l2))]
+    (to-deg (Math/acos (/ n d)))))
+
+;; https://math.stackexchange.com/a/1743505
+(defn center-from-pts
+  "compute the center point of an arc through 3 points"
+  [p1 p2 p3]
+  (when-not (on-line? p1 [p2 p3])
+    (let [u1 (mapv - p2 p1)
+          u2 (mapv - p3 p1)
+          w1 (cross* (mapv - p3 p1) u1)
+          u (normalize u1)
+          w (normalize w1)
+          v (cross* w u)
+          [bx by] [(dot* u1 u) 0]
+          [cx cy] [(dot* u2 u) (dot* u2 v)]
+          h (/ (+ (sq (- cx (/ bx 2))) (sq cy) (- 0 (sq (/ bx 2)))) 
+               (* 2 cy))]
+      (v+ p1 
+          (v* (repeat (/ bx 2)) u) 
+          (v* (repeat h) v)))))
+
+#+end_src
+
+** area
+#+begin_src clojure :tangle ./src/forge/proto.cljc
+(defn triangle-area
+  "compute the area of a triangle defined by three points"
+  [a b c]
+  ;; use Heron's formula
+  (let [la (distance b c)
+        lb (distance a c)
+        lc (distance a b)
+        s (/ (+ la lb lc) 2)]
+    (Math/sqrt (* s (- s la) (- s lb) (- s lc)))))
+
+(defn polygon-area
+  [pts]
+  (let [tris (:triangles (delaunay/triangulate pts))]
+    (->> pts
+         (delaunay/triangulate)
+         (:triangles)
+         (map #(apply triangle-area %))
+         (reduce +))))
+
+#+end_src
+
+** bounding-box
+#+begin_src clojure :tangle ./src/forge/proto.cljc
+(defn bb-center-2d
+  [pts]
+  (let [xs (map first pts)
+        ys (map last pts)
+        xmax (apply max xs)
+        ymax (apply max ys)
+        xmin (apply min xs)
+        ymin (apply min ys)]
+    [(+ (/ (- xmax xmin) 2.0) xmin)
+     (+ (/ (- ymax ymin) 2.0) ymin)]))
+
+(defn centroid
+  [pts]
+  (let [axes (count (first pts))
+        splits (for [axis (range 0 axes)]
+                 (map #(nth % axis) pts))]
+    (mapv #(apply average %) splits)))
+
+(defn bounding-box-corners
+  [shape]
+  (let [xs (map #(nth % 0)
+                (sort-by #(nth % 0) (:vertices shape)))
+        ys (map #(nth % 1)
+                (sort-by #(nth % 1) (:vertices shape)))
+        zs (map #(nth % 2)
+                (sort-by #(nth % 2) (:vertices shape)))]
+    [[(first xs) (first ys) (first zs)]
+     [(last xs) (last ys) (last zs)]]))
+
+(declare polygon)
+(declare extrude)
+(defn bounding-volume-proto
+  [shape]
+  (let [[a z] (bounding-box-corners shape)
+        b [(first z) (second a) (last a)]
+        c [(first z) (second z) (last a)]
+        d [(first a) (second z) (last a)]
+        s1 (polygon [a b c d])
+        h (Math/abs (- (last z) (last a)))]
+    (extrude s1 h)))
+
+#+end_src
+
+** estimators
+Some properties are needed during calculations. The simplest way to ge them is with estimators. These should improve over time, but for now can 'brute force' things a bit.
+
+#+begin_src clojure :tangle ./src/forge/proto.cljc
+(defn estimate-path-length
+  [path [t1 t2] step]
+  (let [samples (range t1 (+ t2 step) step)
+        pts (partition 2 1 (map path samples))]
+    (reduce + (map (partial apply distance) pts))))
+
+;; this breaks somewhat often. Consider a case where the match is
+;; a very tiny difference in parameter space. It's easy to pass over it
+;; there's surely a more refined approach, perhaps a combination of several algorithms?
+(defn close?
+  [p1 p2]
+  (let [[x1 y1 z1] p1
+        [x2 y2 z2] p2]
+    (and (nearly? (+ 1 (Math/abs (- x1 x2))) 1.0)
+         (nearly? (+ 1 (Math/abs (- y1 y2))) 1.0)
+         (nearly? (+ 1 (Math/abs (- z1 z2))) 1.0))))
+
+(defn estimate-parameter
+  [f pt step]
+  (let [[x y z] pt
+        samples (into [] (range 0 (+ 1 step) step))
+        pts (mapv f samples)
+        close? (partial close? pt)]
+    (get samples
+         (count (take-while #(not (= (first (filter close? pts)) %)) pts)))))
+
+#+end_src
+
+** brep-remapper
+#+begin_src clojure :tangle ./src/forge/proto.cljc
+(defn remap-within
+  [f [start end] x]
+  (when (and (>= x start) (< x end))
+    (let [step (- end start)
+          t (/ (- x start) step)]
+      (f t))))
+
+#+end_src
+
+** frep-voxel-grid-proto
+#+begin_src clojure :tangle ./src/forge/proto.cljc
+(defn frep-voxel-grid-proto
+  [[minc maxc] [xs ys zs]]
+  (for [x (range (first minc) (first maxc) xs)
+        y (range (second minc) (second maxc) ys)
+        z (range (last minc) (last maxc) zs)]
+    [x y z]))
+
+#+end_src
+* forge-model
+** notes
+This is a section that I think should move to the forge library. It's here only for prototyping at the moment.
+
+The model will be consistent such that any operation done on it will produce a model as output. This lets you chain any set of operations together to produce a model. You can then also create renderers as separate applications.
+
+Any object consists of:
+
+- sdf      (FREP fn)        1 or more
+- vertices (3-tuples)       1 or more
+- curves   (parametric fns) 0 or more
+- surfaces (parametric fns) 0 or more
+- history  (sequence of operation fns/args) 1 or more
+
+primitives (fns that generate the initial structure):
+
+- vertex
+- line
+- polyline
+- curve
+
+- circle
+- rectangle
+- polygon
+
+- extrude
+- revolve
+
+- sphere
+- box
+- cylinder
+- polyhedron
+- surface
+
+Necessary operations:
+
+- translate
+- rotate
+- scale
+
+- union
+- difference
+- intersection
+** operations
+*** unions
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn frep-union [f g]
+  (fn [pt]
+    (let [a (f pt)
+          b (g pt)]
+      (min a b))))
+
+(defn brep-curve-union
+  [& curves]
+  (let [n (count curves)
+        intervals (map #(vector % (inc %)) (range n))]
+    (fn [t]
+      (let [t (* n t)]
+        (cond
+          (= (float t) 0.0) ((first curves) 0)
+          (= (float t) (float n)) ((last curves) 1)
+          :else
+          (first
+           (filter 
+            some?
+            (map #(remap-within %1 %2 t) curves intervals))))))))
+
+(defn brep-surface-union
+  [& surfaces]
+  (let [n (count surfaces)
+        intervals (map #(vector % (inc %)) (range n))]
+    (fn [u v]
+      (let [partial-surfaces (map #(partial % u) surfaces)]
+        ((apply brep-curve-union partial-surfaces) v)))))
+
+(defn union
+  [shape1 shape2]
+  (let [s1 (dissoc shape1 :frep :history)
+        s2 (dissoc shape2 :frep :history)]
+    (merge
+     (merge-with (comp vec concat) s1 s2)
+     {:frep (frep-union (:frep shape1) (:frep shape2))
+      :history [`(union ~shape1 ~shape2)]})))
+
+#+END_SRC
+
+*** difference
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn frep-difference [f g]
+  (fn [pt]
+    (let [a (f pt)
+          b (* -1 (g pt))]
+      (max a b))))
+
+#+END_SRC
+
+*** intersection
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn frep-intersection [f g]
+  (fn [pt]
+    (let [a (f pt)
+          b (g pt)]
+      (max a b))))
+
+#+END_SRC
+
+*** transformations
+**** translate
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn frep-translate
+  [f pos]
+  (fn [pt]
+    (f (v+ pt pos))))
+
+(defn brep-translate
+  [f pos]
+  (comp #(v+ pos %) f))
+
+(defn translate
+  [shape pos]
+  (merge
+   shape
+   {:history (conj (:history shape) `(translate ~shape ~pos))
+    :frep (frep-translate (:frep shape) pos)
+    :vertices (mapv (partial v+ pos) (:vertices shape))
+    :curves (mapv #(brep-translate % pos) (:curves shape))
+    :surfaces (mapv #(brep-translate % pos) (:surfaces shape))
+    :volumes (mapv #(brep-translate % pos) (:volumes shape))}))
+
+#+END_SRC
+
+**** rotate
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn sin-cos-pair [theta]
+  [(Math/sin (to-rad theta)) (Math/cos (to-rad theta))])
+
+(defn rot-pt-2d
+  [[x y] theta]
+  (let [[s-t c-t] (sin-cos-pair theta)]
+    [(- (* x c-t) (* y s-t))
+     (+ (* y c-t) (* x s-t))]))
+
+;; this rotates a point around [0,0,0]
+(defn rot-pt
+  [[x y z] axis theta]
+  (cond
+    (= axis :x) (into [x] (rot-pt-2d [y z] theta))
+    (= axis :y) (apply #(into [] [%2 y %1]) (rot-pt-2d [z x] theta))
+    (= axis :z) (into (rot-pt-2d [x y] theta) [z])))
+
+(defn rotate-point
+  [pt [ax ay az]]
+  (-> pt
+      (rot-pt :z az)
+      (rot-pt :y ay)
+      (rot-pt :x ax)))
+
+(defn brep-rotate
+  [f angles]
+  (comp #(rotate-point % angles) f))
+
+(defn frep-rotate
+  [f angles]
+  (fn [pt]
+    (f (rotate-point pt angles))))
+
+(defn rotate
+  [shape angles]
+  (merge
+   shape
+   {:history (conj (:history shape) `(rotate ~shape ~angles))
+    :frep (frep-rotate (:frep shape) angles)
+    :vertices (mapv #(rotate-point % angles) (:vertices shape))
+    :curves (mapv #(brep-rotate % angles) (:curves shape))
+    :surfaces (mapv #(brep-rotate % angles) (:surfaces shape))
+    :volumes (mapv #(brep-rotate % angles) (:volumes shape))}))
+
+#+END_SRC
+
+**** scale
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn frep-scale
+  [f scales]
+  (fn [pt]
+    (f (v* pt scales))))
+
+(defn brep-scale
+  [f scales]
+  (comp #(v* scales %) f))
+
+(defn scale
+  [shape scales]
+  (merge
+   shape
+   {:history (conj (:history shape) `(scale ~shape ~scales))
+    :frep (frep-scale (:frep shape) scales)
+    :vertices (mapv (partial v* scales) (:vertices shape))
+    :curves (mapv #(brep-scale % scales) (:curves shape))
+    :surfaces (mapv #(brep-scale % scales) (:surfaces shape))
+    :volumes (mapv #(brep-scale % scales) (:volumes shape))}))
+
+#+END_SRC
+
+*** extrude
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn frep-extrude
+  [f h]
+  (fn [pt]
+    (let [d (f (drop-last pt))
+          w [d (- (Math/abs (last pt)) h)]]
+      (+ (min (apply max w) 0)
+         (distance [0 0]
+                   [(max (first w) 0) (max (second w) 0)])))))
+
+(declare brep-line)
+(defn brep-curve-extrude
+  [c h]
+  (fn [u v]
+    (let [c2 (brep-line (c u) (v+ (c u) [0 0 h]))]
+      (c2 v))))
+
+(defn brep-surface-extrude
+  [s h]
+  (fn [u v w]
+    (let [c1 (brep-line (s u v) (v+ (s u v) [0 0 h]))]
+      c1 v)))
+
+(defn extrude
+  [shape h]
+  (let [vertices (mapv (partial v+ [0 0 h]) (:vertices shape))]
+    (merge
+     (merge-with
+      (comp vec concat)
+      shape
+      {:history [`(extrude ~shape ~h)]
+       :vertices vertices
+       :curves (concat
+                (mapv #(brep-translate % [0 0 h]) (:curves shape))
+                (mapv #(brep-line %1 %2) (:vertices shape) vertices))
+       :surfaces (concat
+                  [(brep-translate (first (:surfaces shape)) [0 0 h])]
+                  (mapv #(brep-curve-extrude % h) (:curves shape)))
+       :volumes [(brep-surface-extrude (first (:surfaces shape)) h)]})
+     {:frep (frep-extrude (:frep shape) h)})))
+
+#+END_SRC
+
+*** sweep
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn brep-curve-straight-sweep
+  [c1 c2]
+  (fn [u v]
+    (v+ (c1 u) (c2 v))))
+
+(defn brep-surface-straight-sweep
+  [s c]
+  (fn [u v w]
+    (v+ (s u v) (c w))))
+
+#+END_SRC
+
+*** revolve
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn frep-revolve
+  [f r]
+  (fn [pt]
+    (let [q [(- (distance [0 0] [(first pt) (last pt)]) r) 
+             (second pt)]]
+      (f q))))
+
+#+END_SRC
+
+** primitives
+*** vertex
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn vertex
+  [[x y z]]
+  {:history [`(vertex [~x ~y ~z])]
+   :frep (fn [pt]
+           (distance [x y z] pt))
+   :vertices [[x y z]]})
+
+#+END_SRC
+
+*** line
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn frep-line
+  [a b]
+  (fn [pt]
+    (let [pa (map - pt a)
+          ba (map - b a)
+          h (clamp (/ (dot* pa ba) (dot* ba ba)) 0 1)]
+      (distance (map - pa (map * ba (repeat h))) [0 0 0]))))
+
+(defn brep-line
+  [a b]
+  (fn [t]
+    (cond
+      (= (float t) 0.0) a
+      (= (float t) 1.0) b
+      :else
+      (v+ a (v* (v- b a) (repeat t))))))
+
+(defn line
+  [a b]
+  {:history [`(line ~a ~b)]
+   :frep (frep-line a b)
+   :vertices [a b]
+   :curves [(brep-line a b)]})
+
+(defn brep-polyline
+  [pts]
+  (let [step (/ 1.0 (dec (count pts)))
+        intervals (partition 2 1 (range 0 (+ 1 step) step))
+        lines (map (partial apply brep-line) (partition 2 1 pts))]
+    (fn [t]
+      (cond 
+        (= (float t) 0.0) (first pts)
+        (= (float t) 1.0) (last pts)
+        :else
+        (first (filter some?
+                       (map #(remap-within %1 %2 t) lines intervals)))))))
+
+#+END_SRC
+
+*** circle
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn frep-circle
+  [r]
+  (fn [pt]
+    (- (distance pt [0 0 0]) r)))
+
+;;https://mathforum.org/library/drmath/view/63755.html
+(defn brep-curve-circle
+  [a b c]
+  (let [n (normalize (normal a b c))
+        r (radius-from-pts a b c)
+        cp (center-from-pts a b c)
+        u (normalize (mapv - a cp))
+        v (cross* n u)]
+    (fn [t]
+      (cond
+        (or (< t 0.0) (> t 1.0)) nil
+        (= (float t) 0.0) a
+        (= (float t) 1.0) a
+        :else
+        (let [t (* 2 Math/PI t)]
+          (v+ cp
+              (v* (repeat (* r (Math/cos t))) u)
+              (v* (repeat (* r (Math/sin t))) v)))))))
+
+(defn brep-surface-circle
+  [a b c]
+  (let [cp (center-from-pts a b c)
+        c1 (brep-curve-circle a b c)]
+    (fn [u v]
+      (let [c2 (brep-line cp (c1 u))]
+        (c2 v)))))
+
+(defn circle
+  [r]
+  {:history [`(circle ~r)]
+   :frep (frep-circle r)
+   :vertices [#_[0 0 0] [r 0 0] [0 r 0] [(- r) 0 0] [0 (- r) 0]]
+   :curves [(brep-curve-circle [r 0 0] [0 r 0] [(- r) 0 0])]
+   :surfaces [(brep-surface-circle [r 0 0] [0 r 0] [(- r) 0 0])]})
+
+#+END_SRC
+
+*** ellipse
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn brep-curve-ellipse
+  [rx ry]
+  (fn [t]
+    (let [t (* 2 Math/PI t)
+          x (* rx (Math/cos t))
+          y (* ry (Math/sin t))]
+      [x y])))
+
+#+END_SRC
+
+*** arc
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn old-arc
+  [a b c]
+  (let [cr (brep-curve-circle a b c)
+        c-param (estimate-parameter cr c 0.001)]
+    (fn [t]
+      (cond
+        (or (< t 0.0) (> t 1.0)) nil
+        (= (float t) 0.0) a
+        (= (float t) 1.0) c
+        :else
+        (let [t (* c-param t)]
+          (cr t))))))
+
+(defn brep-curve-arc
+  [a b c]
+  (let [circle (brep-curve-circle a b c)
+        cp (center-from-pts a b c)
+        angle (a cp c)]
+    (fn [t]
+      (let [t (* t (/ angle 360))]
+        (circle t)))))
+
+;; this is not correct. ...-straight-sweep does
+;; not account for rotating based on path normal
+(defn brep-surface-arc
+  [a b c]
+  (let [cp (center-from-pts a b c)
+        c1 (brep-line cp a)
+        c2 (brep-curve-arc a b c)]
+    (fn [u v]
+      ((brep-curve-straight-sweep c1 c2) u v))))
+
+#+END_SRC
+
+*** triangle
+[[https://www.iquilezles.org/www/articles/distfunctions2d/distfunctions2d.htm]]
+
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn frep-triangle
+  [a b c]
+  (fn [pt]
+    (let [[e0 e1 e2] (map #(apply v- %) [[b a] [c b] [a c]])
+          [v0 v1 v2] (map (partial v- pt) [a b c])
+          xf (fn [v e] 
+               (v- v (map * e (repeat (clamp (/ (dot* v e) (dot* e e)) 0 1)))))
+          [pq0 pq1 pq2] (map #(apply xf %) [[v0 e0] [v1 e1] [v2 e2]])
+          s (sign (- (* (first e0) (second e2)) (* (second e0) (first e2))))
+          d1 (min (dot* pq0 pq0)
+                  (dot* pq1 pq1)
+                  (dot* pq2 pq2))
+          d2 (min (* s (- (* (first v0) (second e0)) (* (second v0) (first e0))))
+                  (* s (- (* (first v1) (second e1)) (* (second v1) (first e1))))
+                  (* s (- (* (first v2) (second e2)) (* (second v2) (first e2)))))]
+      (* -1 (Math/sqrt d1) (sign d2)))))
+
+(defn brep-surface-triangle
+  [a b c]
+  (let [l1 (brep-line b a)
+        l2 (brep-line c a)]
+    (fn [u v]
+      (let [l3 (brep-line (l1 v) (l2 v))]
+        (l3 u)))))
+
+(declare brep-curve-polygon)
+
+(defn triangle
+  [a b c]
+  {:history [`(triangle ~a ~b ~c)]
+   :frep (frep-triangle a b c)
+   :vertices [a b c]
+   :curves (conj
+            (mapv brep-line [a b c] [b c a])
+            (brep-curve-polygon [a b c]))
+   :surfaces [(brep-surface-triangle a b c)]})
+
+#+END_SRC
+
+*** polygon
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn regular-polygon-pts
+  [r n]
+  (let [angle (* 2 Math/PI (/ 1 n))]
+    (for [step (range n)]
+      [(* r (Math/cos (* step angle)))
+       (* r (Math/sin (* step angle)))
+       0])))
+
+(defn frep-polygon
+  [pts]
+  (let [tris (map
+              #(apply frep-triangle %)
+              (:triangles (delaunay/triangulate pts)))]
+    (reduce frep-union tris)))
+
+(defn brep-curve-polygon
+  [pts]
+  (brep-polyline (conj (vec pts) (first pts))))
+
+(defn brep-surface-polygon
+  [pts]
+  (let [xf (fn [pts] (mapv #(conj % 0) pts))
+        tris (mapv xf (:triangles (delaunay/triangulate pts)))]
+    (apply brep-surface-union (map #(apply brep-surface-triangle %) tris))))
+
+(defn polygon
+  [pts]
+  {:history [`(polygon ~pts)]
+   :frep (frep-polygon pts)
+   :vertices (vec pts)
+   :curves (mapv 
+            #(apply brep-line %) 
+            (partition 2 1 (conj (vec pts) (first pts))))
+   :surfaces [(brep-surface-polygon pts)]})
+
+(comment
+;; below is the :curves s-expr that adds the 'combined curve' brep-fn
+
+(conj
+            (mapv 
+             #(apply brep-line %) 
+             (partition 2 1 (conj (vec pts) (first pts))))
+            (brep-curve-polygon pts))
+)
+
+#+END_SRC
+*** sphere
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn frep-sphere [r]
+  (fn [pt]
+    (let [[x y z] pt]
+      (+ (sq x) (sq y) (sq z) (- (sq r))))))
+
+(defn brep-sphere
+  [r]
+  (fn [u v]
+    (let [[u v] (map #(* 2 Math/PI %) [u v])
+          x (* r (Math/sin u) (Math/cos v))
+          y (* r (Math/sin u) (Math/sin v))
+          z (* r (Math/cos u))]
+      [x y z])))
+
+#+END_SRC
+
+*** torus
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn brep-surface-torus
+  [R r]
+  (fn [u v]
+    (let [[u v] (map #(* 2 Math/PI %) [u v])
+          x (* (+ R (* r (Math/cos u))) (Math/cos v))
+          y (* (+ R (* r (Math/cos u))) (Math/sin v))
+          z (* r (Math/sin u))]
+      [x y z])))
+
+#+END_SRC
+
+*** cylinder
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn frep-cylinder [r h]
+  (fn [pt]
+    (let [[x y z] pt]
+      (max (- (Math/sqrt (+ (sq x) (sq y))) r)
+           (- z h) (- (- h) z)))))
+
+(defn brep-surface-cylinder
+  [r h]
+  (fn [u v]
+    (let [u (* 2 Math/PI u)
+          v (* h v)
+          x (* r (Math/cos u))
+          y (* r (Math/sin u))
+          z v]
+      [x y z])))
+
+#+END_SRC
+
+*** box
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn frep-box [l w h]
+  (fn [pt]
+    (let [[x y z] pt]
+      (max (- x l) (- (- l) x)
+           (- y w) (- (- w) y)
+           (- z h) (- (- h) z)))))
+
+#+END_SRC
+
+** scene
+*** camera
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+
+
+#+END_SRC
