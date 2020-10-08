@@ -28,6 +28,16 @@
 
 OCC works when clj is invoked with clj -A:base.
 
+** readme
+#+BEGIN_SRC markdown :tangle ./readme.md
+# Forge
+
+Forge is a library for 3D CAD data.
+
+Currently presented here without a license as things are still highly experimental and subject to changes.
+
+#+END_SRC
+
 * design
 ** Introduction
 *** Pitch
@@ -1570,6 +1580,5 @@ Necessary operations:
 ** scene
 *** camera
 #+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
-
 
 #+END_SRC
