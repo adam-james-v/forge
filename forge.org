@@ -369,154 +369,6 @@ try again with pomax's tutorials
 
 #+end_src
 
-* offset-proto
-#+begin_src clojure
-;; this should be improved
-;; currently can cause divide by zero issues
-(defn line-intersection
-  [[a b] [c d]]
-  (let [[ax ay] a
-        [bx by] b
-        [cx cy] c
-        [dx dy] d
-        xdiff [(- ax bx) (- cx dx)]
-        ydiff [(- ay by) (- cy dy)]
-        div (g/det xdiff ydiff)
-        d [(g/det a b) (g/det c d)]
-        x (/ (g/det d xdiff) div)
-        y (/ (g/det d ydiff) div)]
-    [x y]))
-
-(defn offset-edge
-  [[a b] d]
-  (let [p (perpendicular (mapv - b a))
-        pd (map * (normalize p) (repeat (- d)))
-        xa (mapv + a pd)
-        xb (mapv + b pd)]
-    [xa xb]))
-
-(defn cycle-pairs
-  [pts]
-  (let [n (count pts)]
-    (vec (take n (partition 2 1 (cycle pts))))))
-
-(defn every-other
-  [v]
-  (let [n (count v)]
-    (map #(get v %) (filter even? (range n)))))
-
-(defn wrap-list-once
-  [s]
-  (conj (drop-last s) (last s)))
-
-(defn offset
-  [pts d]
-  (let [edges (cycle-pairs pts)
-        opts (mapcat #(offset-edge % d) edges)
-        oedges (every-other (cycle-pairs opts))
-        edge-pairs (cycle-pairs oedges)]
-    (wrap-list-once (map #(apply line-intersection %) edge-pairs))))
-
-#+end_src
-
-* triangulation
-This is (for now) a copy from:
-
-https://github.com/trystan/delaunay-triangulation
-
-I have to change this to work on 3D points. It currently drops any Z values.
-
-#+BEGIN_SRC clojure :tangle ./src/forge/delaunay.cljc
-(ns forge.delaunay
-  (:require [clojure.set]))
-
-;; move these to geom ns?
-(def abs #?(:clj #(Math/abs %)
-            :cljs #(js/Math.abs %)))
-
-(def pow #?(:clj #(Math/pow %1 %2)
-            :cljs #(Math/pow %1 %2)))
-
-
-(defn rand-int-pt
-  ([n]
-   (rand-int-pt n n))
-
-  ([nx ny]
-   [(rand-int nx) (rand-int ny)]))
-
-(defn random-points
-  ([n]
-   (random-points n n))
-
-  ([nx ny]
-   (repeatedly #(rand-int-pt nx ny))))
-
-(defn grid-points
-  [cell-x cell-y n-xcells n-ycells]
-  (for [nx (range n-xcells)
-        ny (range n-ycells)]
-    [(* cell-x nx) (* cell-y ny)]))
-
-;; https://gist.github.com/mutoo/5617691
-(defn circumscribe-triangle [[[ax ay] [bx by] [cx cy]]]
-  (let [A (- bx ax)
-        B (- by ay)
-        C (- cx ax)
-        D (- cy ay)
-        E (+ (* A (+ ax bx)) (* B (+ ay by)))
-        F (+ (* C (+ ax cx)) (* D (+ ay cy)))
-        G (* 2 (- (* A (- cy by)) (* B (- cx bx))))]
-    (when (> (abs G) 0.000001)
-      (let [cx (/ (- (* D E) (* B F)) G)
-            cy (/ (- (* A F) (* C E)) G)
-            dx (- cx ax)
-            dy (- cy ay)
-            r  (+ (pow dx 2) (pow dy 2))]
-        {:x cx :y cy :radius-squared r}))))
-
-(defn edges [[p1 p2 p3]] [[p1 p2] [p2 p3] [p3 p1]])
-
-(defn contains-point? [{:keys [x y radius-squared]} [px py]]
-  (let [distance-squared (+ (pow (- x px) 2) (pow (- y py) 2))]
-    (< distance-squared radius-squared)))
-
-(defn outer-edges [triangles]
-  (let [all-edges    (mapcat edges triangles)
-        matches      (fn [edge] (filter #{edge (reverse edge)} all-edges))
-        appears-once (fn [edge] (= (count (matches edge)) 1))]
-    (filter appears-once all-edges)))
-
-(defn make-new-triangles [containers point]
-  (->> containers
-       outer-edges
-       (map (fn [[p1 p2]] [p1 p2 point]))
-       set))
-
-(defn add-point-to-triangles [triangles point]
-  (let [containers    (filter #(contains-point? (circumscribe-triangle %) point) triangles)
-        new-triangles (make-new-triangles containers point)]
-    (clojure.set/union (clojure.set/difference triangles containers) new-triangles)))
-
-(defn bounds [points]
-  (let [minx (->> points (map first) (apply min) (+ -1000))
-        maxx (->> points (map first) (apply max) (+ 1000))
-        miny (->> points (map second) (apply min) (+ -1000))
-        maxy (->> points (map second) (apply max) (+ 1000))]
-    [[minx maxy] [maxx maxy] [minx miny] [maxx miny]]))
-
-;; http://paulbourke.net/papers/triangulate/
-(defn triangulate [points]
-  (let [points (map (fn [[x y]] [(float x) (float y)]) points)
-        [tl tr bl br] (bounds points)
-        initial #{[tl tr bl] [bl tr br]}
-        with-bounds (reduce add-point-to-triangles initial points)
-        triangles (remove #(some #{tl tr bl br} %) with-bounds)]
-    {:points points
-     :triangles triangles
-     :edges (distinct (mapcat edges triangles))}))
-
-#+END_SRC
 * math-geom
 Use the util namespace to place functions which may be used across the other namespaces. Currently the util namespace contains mostly geometry calculation functions like checks for lines and points.
 
@@ -922,7 +774,7 @@ and re-implemented with clojure.test library.
     [(+ (/ (- xmax xmin) 2.0) xmin)
      (+ (/ (- ymax ymin) 2.0) ymin)]))
 
-(defn centroid
+(defn midpoint
   [pts]
   (let [axes (count (first pts))
         splits (for [axis (range 0 axes)]
@@ -1007,6 +859,191 @@ Some properties are needed during calculations. The simplest way to ge them is w
     [x y z]))
 
 #+end_src
+* 2d-algorithms
+** polygon-intersection
+HUGE NOTE: The nearly function needs serious checking. It will be necessary to work very well because I need 'close enough' predicates often when working with geometry checks.
+
+#+begin_src clojure :tangle ./src/forge/proto.cljc
+(defn line-intersection
+  [[a b] [c d]]
+  (let [[ax ay] a
+        [bx by] b
+        [cx cy] c
+        [dx dy] d
+        xdiff [(- ax bx) (- cx dx)]
+        ydiff [(- ay by) (- cy dy)]
+        div (determinant-2d xdiff ydiff)]
+    (when (not (nearly? (+ 100.0 div) 100.0)) ;; HACK. Fix nearly? 
+      (let [d [(determinant-2d a b) (determinant-2d c d)]
+            x (/ (determinant-2d d xdiff) div)
+            y (/ (determinant-2d d ydiff) div)]
+        [x y 0]))))
+
+;; line-intersection (works except it uses infinitely long lines)
+;; bounding-box-corners works with 3d points (set z = 0 for 2d)
+;; centroid gives middle point between 2 points. Use with above function to get the centerpoint of a bounding box... not necessarily that shape's mass center
+
+(defn line-segment-intersection
+  [[a b] [c d]]
+  (let [pt (line-intersection [a b] [c d])]
+    (when (and pt
+               (on-line? pt [a b])
+               (on-line? pt [c d]))
+      pt)))
+
+(defn identical-polygons?
+  [pga pgb]
+  (= (into #{} pga)
+     (into #{} pgb)))
+
+(declare close-path)
+(defn polygon-intersection
+  [pga pgb]
+  (when (not (identical-polygons? pga pgb))
+    (let [lines-a (partition 2 1 (close-path pga))
+          lines-b (partition 2 1 (close-path pgb))
+          s (for [la lines-a
+                  lb lines-b]
+              (line-segment-intersection la lb))]
+      (->> s
+           (filter (complement nil?))
+           (into #{})
+           (vec)))))
+
+#+end_src
+
+** offset-proto
+#+begin_src clojure
+ (defn offset-edge
+   [[a b] d]
+   (let [p (perpendicular (mapv - b a))
+         pd (map * (normalize p) (repeat (- d)))
+         xa (mapv + a pd)
+         xb (mapv + b pd)]
+     [xa xb]))
+
+ (defn cycle-pairs
+   [pts]
+   (let [n (count pts)]
+     (vec (take n (partition 2 1 (cycle pts))))))
+
+ (defn every-other
+   [v]
+   (let [n (count v)]
+     (map #(get v %) (filter even? (range n)))))
+
+ (defn wrap-list-once
+   [s]
+   (conj (drop-last s) (last s)))
+
+ (defn offset
+   [pts d]
+   (let [edges (cycle-pairs pts)
+         opts (mapcat #(offset-edge % d) edges)
+         oedges (every-other (cycle-pairs opts))
+         edge-pairs (cycle-pairs oedges)]
+     (wrap-list-once (map #(apply line-intersection %) edge-pairs))))
+
+ #+end_src
+
+** triangulation
+ This is (for now) a copy from:
+
+ https://github.com/trystan/delaunay-triangulation
+
+ I have to change this to work on 3D points. It currently drops any Z values.
+
+ #+BEGIN_SRC clojure :tangle ./src/forge/delaunay.cljc
+ (ns forge.delaunay
+   (:require [clojure.set]))
+
+ ;; move these to geom ns?
+ (def abs #?(:clj #(Math/abs %)
+             :cljs #(js/Math.abs %)))
+
+ (def pow #?(:clj #(Math/pow %1 %2)
+             :cljs #(Math/pow %1 %2)))
+
+
+ (defn rand-int-pt
+   ([n]
+    (rand-int-pt n n))
+
+   ([nx ny]
+    [(rand-int nx) (rand-int ny)]))
+
+ (defn random-points
+   ([n]
+    (random-points n n))
+
+   ([nx ny]
+    (repeatedly #(rand-int-pt nx ny))))
+
+ (defn grid-points
+   [cell-x cell-y n-xcells n-ycells]
+   (for [nx (range n-xcells)
+         ny (range n-ycells)]
+     [(* cell-x nx) (* cell-y ny)]))
+
+ ;; https://gist.github.com/mutoo/5617691
+ (defn circumscribe-triangle [[[ax ay] [bx by] [cx cy]]]
+   (let [A (- bx ax)
+         B (- by ay)
+         C (- cx ax)
+         D (- cy ay)
+         E (+ (* A (+ ax bx)) (* B (+ ay by)))
+         F (+ (* C (+ ax cx)) (* D (+ ay cy)))
+         G (* 2 (- (* A (- cy by)) (* B (- cx bx))))]
+     (when (> (abs G) 0.000001)
+       (let [cx (/ (- (* D E) (* B F)) G)
+             cy (/ (- (* A F) (* C E)) G)
+             dx (- cx ax)
+             dy (- cy ay)
+             r  (+ (pow dx 2) (pow dy 2))]
+         {:x cx :y cy :radius-squared r}))))
+
+ (defn edges [[p1 p2 p3]] [[p1 p2] [p2 p3] [p3 p1]])
+
+ (defn contains-point? [{:keys [x y radius-squared]} [px py]]
+   (let [distance-squared (+ (pow (- x px) 2) (pow (- y py) 2))]
+     (< distance-squared radius-squared)))
+
+ (defn outer-edges [triangles]
+   (let [all-edges    (mapcat edges triangles)
+         matches      (fn [edge] (filter #{edge (reverse edge)} all-edges))
+         appears-once (fn [edge] (= (count (matches edge)) 1))]
+     (filter appears-once all-edges)))
+
+ (defn make-new-triangles [containers point]
+   (->> containers
+        outer-edges
+        (map (fn [[p1 p2]] [p1 p2 point]))
+        set))
+
+ (defn add-point-to-triangles [triangles point]
+   (let [containers    (filter #(contains-point? (circumscribe-triangle %) point) triangles)
+         new-triangles (make-new-triangles containers point)]
+     (clojure.set/union (clojure.set/difference triangles containers) new-triangles)))
+
+ (defn bounds [points]
+   (let [minx (->> points (map first) (apply min) (+ -1000))
+         maxx (->> points (map first) (apply max) (+ 1000))
+         miny (->> points (map second) (apply min) (+ -1000))
+         maxy (->> points (map second) (apply max) (+ 1000))]
+     [[minx maxy] [maxx maxy] [minx miny] [maxx miny]]))
+
+ ;; http://paulbourke.net/papers/triangulate/
+ (defn triangulate [points]
+   (let [points (map (fn [[x y]] [(float x) (float y)]) points)
+         [tl tr bl br] (bounds points)
+         initial #{[tl tr bl] [bl tr br]}
+         with-bounds (reduce add-point-to-triangles initial points)
+         triangles (remove #(some #{tl tr bl br} %) with-bounds)]
+     {:points points
+      :triangles triangles
+      :edges (distinct (mapcat edges triangles))}))
+
+ #+END_SRC
 * forge-model
 ** notes
 This is a section that I think should move to the forge library. It's here only for prototyping at the moment.
@@ -1050,8 +1087,16 @@ Necessary operations:
 - union
 - difference
 - intersection
+
+Thoughts related to 'sketches'
+
+- might be useful as a grouping mechanism for all 2D things.
+- could just have all 2D related operations implicitly work on XY plane... and you can use all 3D operations normally
+- you can def a list of 2D things and just reduce them with union to create an object that you can then extrude, revolve, display, whatever. So, for now, there is not explicit structure for sketches. They are just user convention at most.
+
 ** operations
 *** unions
+**** frep
 #+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
 (defn frep-union [f g]
   (fn [pt]
@@ -1059,6 +1104,10 @@ Necessary operations:
           b (g pt)]
       (min a b))))
 
+#+END_SRC
+
+**** naive-brep
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
 (defn brep-curve-union
   [& curves]
   (let [n (count curves)
@@ -1090,6 +1139,20 @@ Necessary operations:
      (merge-with (comp vec concat) s1 s2)
      {:frep (frep-union (:frep shape1) (:frep shape2))
       :history [`(union ~shape1 ~shape2)]})))
+
+#+END_SRC
+
+**** brep
+Let's consider first a union of 2 polygons known to be on the same plane (assume in XY plane). We need to:
+
+- find all intersection points between the polygons
+- remove all points from p1 that are inside p2
+- remove all points from p2 that are inside (original p1)
+- remaining points are concatenated, but order must be preserved around the new shape
+
+
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+
 
 #+END_SRC
 
@@ -1479,7 +1542,22 @@ Necessary operations:
       [(* r (Math/cos (* step angle)))
        (* r (Math/sin (* step angle)))
        0])))
+#+END_SRC
 
+My frep-polygon uses a triangulation/union approach. This did break for me in some cases, so I am going to test an alternate implementation. I will port this code:
+
+
+https://www.iquilezles.org/www/articles/distfunctions2d/distfunctions2d.htm  (go to polygon - exact section)
+https://www.shadertoy.com/view/wdBXRW
+
+
+Every polygon function must work on & paths, not just a single list of points. This is to allow multi-shape paths (eg. a circle with a hole.)
+
+As well, any polygon union should effectively produce the same polygon that would result from providing each path into one polygon call. That is...
+
+(= (union (polygon pts-a) (polygon pts-b)) (polygon pts-a pts-b))
+
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
 (defn frep-polygon
   [pts]
   (let [tris (map
@@ -1487,6 +1565,10 @@ Necessary operations:
               (:triangles (delaunay/triangulate pts)))]
     (reduce frep-union tris)))
 
+#+END_SRC
+
+
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
 (defn brep-curve-polygon
   [pts]
   (brep-polyline (conj (vec pts) (first pts))))
@@ -1507,15 +1589,22 @@ Necessary operations:
             (partition 2 1 (conj (vec pts) (first pts))))
    :surfaces [(brep-surface-polygon pts)]})
 
-(comment
-;; below is the :curves s-expr that adds the 'combined curve' brep-fn
+(defn close-path
+  [path]
+  (conj (vec path) (first path)))
 
-(conj
-            (mapv 
-             #(apply brep-line %) 
-             (partition 2 1 (conj (vec pts) (first pts))))
-            (brep-curve-polygon pts))
-)
+(defn path->brep-lines
+  [path]
+  (mapv #(apply brep-line %) (partition 2 1 path)))
+
+(defn polygon2
+  [& paths]
+  (let [paths (mapv vec paths)]
+    {:history [`(polygon2 ~@paths)]
+     :frep nil
+     :vertices (apply concat paths)
+     :curves (vec (mapcat (comp path->brep-lines close-path) paths))
+     :surfaces (mapv brep-surface-polygon paths)}))
 
 #+END_SRC
 *** sphere

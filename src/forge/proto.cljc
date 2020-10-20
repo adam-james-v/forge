@@ -295,7 +295,7 @@
     [(+ (/ (- xmax xmin) 2.0) xmin)
      (+ (/ (- ymax ymin) 2.0) ymin)]))
 
-(defn centroid
+(defn midpoint
   [pts]
   (let [axes (count (first pts))
         splits (for [axis (range 0 axes)]
@@ -365,6 +365,52 @@
         z (range (last minc) (last maxc) zs)]
     [x y z]))
 
+(defn line-intersection
+  [[a b] [c d]]
+  (let [[ax ay] a
+        [bx by] b
+        [cx cy] c
+        [dx dy] d
+        xdiff [(- ax bx) (- cx dx)]
+        ydiff [(- ay by) (- cy dy)]
+        div (determinant-2d xdiff ydiff)]
+    (when (not (nearly? (+ 100.0 div) 100.0)) ;; HACK. Fix nearly? 
+      (let [d [(determinant-2d a b) (determinant-2d c d)]
+            x (/ (determinant-2d d xdiff) div)
+            y (/ (determinant-2d d ydiff) div)]
+        [x y 0]))))
+
+;; line-intersection (works except it uses infinitely long lines)
+;; bounding-box-corners works with 3d points (set z = 0 for 2d)
+;; centroid gives middle point between 2 points. Use with above function to get the centerpoint of a bounding box... not necessarily that shape's mass center
+
+(defn line-segment-intersection
+  [[a b] [c d]]
+  (let [pt (line-intersection [a b] [c d])]
+    (when (and pt
+               (on-line? pt [a b])
+               (on-line? pt [c d]))
+      pt)))
+
+(defn identical-polygons?
+  [pga pgb]
+  (= (into #{} pga)
+     (into #{} pgb)))
+
+(declare close-path)
+(defn polygon-intersection
+  [pga pgb]
+  (when (not (identical-polygons? pga pgb))
+    (let [lines-a (partition 2 1 (close-path pga))
+          lines-b (partition 2 1 (close-path pgb))
+          s (for [la lines-a
+                  lb lines-b]
+              (line-segment-intersection la lb))]
+      (->> s
+           (filter (complement nil?))
+           (into #{})
+           (vec)))))
+
 (defn frep-union [f g]
   (fn [pt]
     (let [a (f pt)
@@ -402,6 +448,8 @@
      (merge-with (comp vec concat) s1 s2)
      {:frep (frep-union (:frep shape1) (:frep shape2))
       :history [`(union ~shape1 ~shape2)]})))
+
+
 
 (defn frep-difference [f g]
   (fn [pt]
@@ -755,15 +803,22 @@
             (partition 2 1 (conj (vec pts) (first pts))))
    :surfaces [(brep-surface-polygon pts)]})
 
-(comment
-;; below is the :curves s-expr that adds the 'combined curve' brep-fn
+(defn close-path
+  [path]
+  (conj (vec path) (first path)))
 
-(conj
-            (mapv 
-             #(apply brep-line %) 
-             (partition 2 1 (conj (vec pts) (first pts))))
-            (brep-curve-polygon pts))
-)
+(defn path->brep-lines
+  [path]
+  (mapv #(apply brep-line %) (partition 2 1 path)))
+
+(defn polygon2
+  [& paths]
+  (let [paths (mapv vec paths)]
+    {:history [`(polygon2 ~@paths)]
+     :frep nil
+     :vertices (apply concat paths)
+     :curves (vec (mapcat (comp path->brep-lines close-path) paths))
+     :surfaces (mapv brep-surface-polygon paths)}))
 
 (defn frep-sphere [r]
   (fn [pt]
