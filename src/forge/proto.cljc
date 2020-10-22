@@ -1,5 +1,6 @@
 (ns forge.proto
-  (:require [forge.delaunay :as delaunay]))
+  (:require [forge.delaunay :as delaunay]
+            [same :refer [ish? zeroish?]]))
 
 (defn nearly?
   "compare two float values for approximate equality.
@@ -30,7 +31,11 @@
   (if (not (= (count coll-a) (count coll-b)))
     #?(:clj  (throw (Exception. "collections must be same size."))
        :cljs (throw (js/Error. "collections must be same size.")))
-    (empty? (filter false? (map nearly? coll-a coll-b)))))
+    (let [diffs (mapv #(float (Math/abs (- %1 %2))) coll-a coll-b)]
+      (empty? 
+       (filter 
+        false? 
+        (map zeroish? diffs))))))
 
 (defn to-deg
   [rad]
@@ -69,6 +74,10 @@
     (< x lb) lb
     (> x ub) ub
     :else x))
+
+(defn add-z
+  [pt]
+  (conj (vec pt) 0))
 
 (def v+ (partial mapv +))
 (def v- (partial mapv -))
@@ -284,6 +293,17 @@
          (map #(apply triangle-area %))
          (reduce +))))
 
+(defn bb-corners-2d
+  [pts]
+  (let [xs (map first pts)
+        ys (map last pts)
+        xmax (apply max xs)
+        ymax (apply max ys)
+        xmin (apply min xs)
+        ymin (apply min ys)]
+    [[xmin ymin]
+     [xmax ymax]]))
+
 (defn bb-center-2d
   [pts]
   (let [xs (map first pts)
@@ -365,6 +385,33 @@
         z (range (last minc) (last maxc) zs)]
     [x y z]))
 
+(defn on-line?
+  "determine if a point is on a capped line"
+  [pt line]
+  (let [[a b] line
+        ap (v- a pt)
+        bp (v- b pt)]
+    (if (or (all-nearly? pt a) 
+            (all-nearly? pt b))
+      true
+      (let [na (normalize ap)
+            nb (normalize bp)]
+        (and 
+         (all-nearly? (cross* ap bp) [0 0 0]) 
+         (not (all-nearly? na nb)))))))
+
+(defn fake-on-line?
+  "determine if a point is on a capped line"
+  [pt line]
+  (let [[a b] line
+        ap (v- a pt)
+        bp (v- b pt)]
+    (let [na (normalize ap)
+          nb (normalize bp)]
+      (cross* na nb) #_(and 
+       (all-nearly? (cross* ap bp) [0 0 0]) 
+       (not (all-nearly? na nb))))))
+
 (defn line-intersection
   [[a b] [c d]]
   (let [[ax ay] a
@@ -374,22 +421,18 @@
         xdiff [(- ax bx) (- cx dx)]
         ydiff [(- ay by) (- cy dy)]
         div (determinant-2d xdiff ydiff)]
-    (when (not (nearly? (+ 100.0 div) 100.0)) ;; HACK. Fix nearly? 
+    (when (not (zeroish? (Math/abs div))) 
       (let [d [(determinant-2d a b) (determinant-2d c d)]
             x (/ (determinant-2d d xdiff) div)
             y (/ (determinant-2d d ydiff) div)]
-        [x y 0]))))
-
-;; line-intersection (works except it uses infinitely long lines)
-;; bounding-box-corners works with 3d points (set z = 0 for 2d)
-;; centroid gives middle point between 2 points. Use with above function to get the centerpoint of a bounding box... not necessarily that shape's mass center
+        [x y]))))
 
 (defn line-segment-intersection
   [[a b] [c d]]
   (let [pt (line-intersection [a b] [c d])]
     (when (and pt
-               (on-line? pt [a b])
-               (on-line? pt [c d]))
+               (on-line? (add-z pt) (mapv add-z [a b]))
+               (on-line? (add-z pt) (mapv add-z [c d])))
       pt)))
 
 (defn identical-polygons?
@@ -410,6 +453,38 @@
            (filter (complement nil?))
            (into #{})
            (vec)))))
+
+(defn pt-inside-convex?
+  [pts pt]
+  (let [m (mapv float (midpoint pts))]
+    (even? (count (polygon-intersection pts [m pt])))))
+
+
+;; can I use reduce instead?
+;; other recursion scheme?
+(defn clip-ears
+  ([pts]
+   (clip-ears pts []))
+  
+  ([pts tris]
+   (let [tri (into [] (take 3 pts))
+         keep [(first tri) (last tri)]
+         npts (concat keep (into [] (drop 3 pts)))]
+     (if (> (count npts) 2)
+       (recur npts (conj tris tri))
+       (conj tris tri)))))
+
+(defn pt-inside?
+  [pts pt]
+  (let [tris (clip-ears pts)]
+    (->> tris
+         (map #(pt-inside-convex? % pt))
+         (filter true?)
+         (empty?)
+         (not))))
+
+(defn remove-inner-pts
+  [pga pgb]
 
 (defn frep-union [f g]
   (fn [pt]

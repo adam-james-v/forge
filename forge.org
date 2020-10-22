@@ -17,6 +17,7 @@
   org.clojure/test.check         {:mvn/version "0.9.0"}
   org.clojure/math.numeric-tower {:mvn/version "0.0.4"}
   org.clojure/core.logic         {:mvn/version "0.8.11"}
+  same/ish                       {:mvn/version "0.1.4"}
   occjava                        {:local/root  "./resources/occjava.jar"}}
 
  :paths ["src" "resources"]
@@ -261,7 +262,8 @@ To keep it all straight.
 * ns
 #+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
 (ns forge.proto
-  (:require [forge.delaunay :as delaunay]))
+  (:require [forge.delaunay :as delaunay]
+            [same :refer [ish? zeroish?]]))
 
 #+END_SRC
 
@@ -420,7 +422,11 @@ It is sufficient for Forge for the following reasons:
   (if (not (= (count coll-a) (count coll-b)))
     #?(:clj  (throw (Exception. "collections must be same size."))
        :cljs (throw (js/Error. "collections must be same size.")))
-    (empty? (filter false? (map nearly? coll-a coll-b)))))
+    (let [diffs (mapv #(float (Math/abs (- %1 %2))) coll-a coll-b)]
+      (empty? 
+       (filter 
+        false? 
+        (map zeroish? diffs))))))
 
 #+end_src
 
@@ -525,6 +531,10 @@ and re-implemented with clojure.test library.
     (< x lb) lb
     (> x ub) ub
     :else x))
+
+(defn add-z
+  [pt]
+  (conj (vec pt) 0))
 
 #+end_src
 
@@ -763,6 +773,17 @@ and re-implemented with clojure.test library.
 
 ** bounding-box
 #+begin_src clojure :tangle ./src/forge/proto.cljc
+(defn bb-corners-2d
+  [pts]
+  (let [xs (map first pts)
+        ys (map last pts)
+        xmax (apply max xs)
+        ymax (apply max ys)
+        xmin (apply min xs)
+        ymin (apply min ys)]
+    [[xmin ymin]
+     [xmax ymax]]))
+
 (defn bb-center-2d
   [pts]
   (let [xs (map first pts)
@@ -864,6 +885,33 @@ Some properties are needed during calculations. The simplest way to ge them is w
 HUGE NOTE: The nearly function needs serious checking. It will be necessary to work very well because I need 'close enough' predicates often when working with geometry checks.
 
 #+begin_src clojure :tangle ./src/forge/proto.cljc
+(defn on-line?
+  "determine if a point is on a capped line"
+  [pt line]
+  (let [[a b] line
+        ap (v- a pt)
+        bp (v- b pt)]
+    (if (or (all-nearly? pt a) 
+            (all-nearly? pt b))
+      true
+      (let [na (normalize ap)
+            nb (normalize bp)]
+        (and 
+         (all-nearly? (cross* ap bp) [0 0 0]) 
+         (not (all-nearly? na nb)))))))
+
+(defn fake-on-line?
+  "determine if a point is on a capped line"
+  [pt line]
+  (let [[a b] line
+        ap (v- a pt)
+        bp (v- b pt)]
+    (let [na (normalize ap)
+          nb (normalize bp)]
+      (cross* na nb) #_(and 
+       (all-nearly? (cross* ap bp) [0 0 0]) 
+       (not (all-nearly? na nb))))))
+
 (defn line-intersection
   [[a b] [c d]]
   (let [[ax ay] a
@@ -873,22 +921,18 @@ HUGE NOTE: The nearly function needs serious checking. It will be necessary to w
         xdiff [(- ax bx) (- cx dx)]
         ydiff [(- ay by) (- cy dy)]
         div (determinant-2d xdiff ydiff)]
-    (when (not (nearly? (+ 100.0 div) 100.0)) ;; HACK. Fix nearly? 
+    (when (not (zeroish? (Math/abs div))) 
       (let [d [(determinant-2d a b) (determinant-2d c d)]
             x (/ (determinant-2d d xdiff) div)
             y (/ (determinant-2d d ydiff) div)]
-        [x y 0]))))
-
-;; line-intersection (works except it uses infinitely long lines)
-;; bounding-box-corners works with 3d points (set z = 0 for 2d)
-;; centroid gives middle point between 2 points. Use with above function to get the centerpoint of a bounding box... not necessarily that shape's mass center
+        [x y]))))
 
 (defn line-segment-intersection
   [[a b] [c d]]
   (let [pt (line-intersection [a b] [c d])]
     (when (and pt
-               (on-line? pt [a b])
-               (on-line? pt [c d]))
+               (on-line? (add-z pt) (mapv add-z [a b]))
+               (on-line? (add-z pt) (mapv add-z [c d])))
       pt)))
 
 (defn identical-polygons?
@@ -909,6 +953,58 @@ HUGE NOTE: The nearly function needs serious checking. It will be necessary to w
            (filter (complement nil?))
            (into #{})
            (vec)))))
+#+end_src
+
+continue the algorithm...
+
+ - point inside?
+   - line to right... count intersections even = outside, odd = inside, 0 = outside (but only works for convex polygons)
+     - need to consider parallel lines and vertices changing the intersection count (for concanve polygon)
+
+#+begin_src clojure :tangle ./src/forge/proto.cljc
+(defn pt-inside-convex?
+  [pts pt]
+  (let [m (mapv float (midpoint pts))]
+    (even? (count (polygon-intersection pts [m pt])))))
+
+
+;; can I use reduce instead?
+;; other recursion scheme?
+(defn clip-ears
+  ([pts]
+   (clip-ears pts []))
+  
+  ([pts tris]
+   (let [tri (into [] (take 3 pts))
+         keep [(first tri) (last tri)]
+         npts (concat keep (into [] (drop 3 pts)))]
+     (if (> (count npts) 2)
+       (recur npts (conj tris tri))
+       (conj tris tri)))))
+
+(defn pt-inside?
+  [pts pt]
+  (let [tris (clip-ears pts)]
+    (->> tris
+         (map #(pt-inside-convex? % pt))
+         (filter true?)
+         (empty?)
+         (not))))
+#+end_src
+
+- get intersectin points of polygons
+- if zero, done if one, done, else, continue
+- remove pgb points that are inside pga
+- remove pga points that are inside pgb
+- trim pga lines to intersectin points
+- trim pgb lines to intersection points
+- combine pga pts, intersectin points, and pgb points
+  - order matters... not sure how to preserve that yet.
+
+#+begin_src clojure :tangle ./src/forge/proto.cljc
+(defn remove-inner-pts
+  [pga pgb]
+  
 
 #+end_src
 
@@ -1674,3 +1770,19 @@ As well, any polygon union should effectively produce the same polygon that woul
 #+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
 
 #+END_SRC
+
+* scratch
+asdf
+#+begin_src clojure
+
+
+(defn vint [v] (mapv #(int %) v))
+
+(def pga (mapv #(take 2 %) (regular-polygon-pts 85 6)))
+(def pgb (mapv #(v+ [70 30] %) pga))
+(def ipts (polygon-intersection pga pgb))
+
+(def la (nth (partition 2 1 (close-path pga)) 5))
+(def lb (nth (partition 2 1 (close-path pgb)) 4))
+
+#+end_src
