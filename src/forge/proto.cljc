@@ -247,8 +247,8 @@
 ;; https://math.stackexchange.com/questions/361412/finding-the-angle-between-three-points
 (defn angle-from-pts
   [p1 p2 p3]
-  (let [v1 (v- p1 p2)
-        v2 (v- p3 p2)
+  (let [v1 (v- p2 p1)
+        v2 (v- p2 p3)
         l1 (distance p1 p2)
         l2 (distance p3 p2)
         n (dot* v1 v2)
@@ -456,20 +456,53 @@
 
 (defn pt-inside-convex?
   [pts pt]
-  (let [m (mapv float (midpoint pts))]
-    (even? (count (polygon-intersection pts [m pt])))))
+  (let [m (mapv float (midpoint pts))
+        xs (polygon-intersection pts [m pt])]
+    ;; pt inside when count intersection = 0
+    ;; pt inside when intersection = pt
+    (or (= 0 (count xs))
+        (all-nearly? (first xs) pt))))
 
+(defn pt-inside-convex-strict?
+  [pts pt]
+  (let [m (mapv float (midpoint pts))
+        xs (polygon-intersection pts [m pt])]
+    (all-nearly? (first xs) pt)))
+
+(defn acute?
+  [p1 p2 p3]
+  (< (angle-from-pts p1 p2 p3) 180.0))
+
+(defn line?
+  [[a b c]]
+  (on-line-inf? (add-z a) (mapv add-z [b c])))
+
+(defn contains-value?
+  [coll val]
+  (when (some #{val} coll) true))
+
+(defn vecdiff
+  [va vb]
+  (into [] (filter (complement (partial contains-value? vb)) va))) 
+
+(defn simplify-segments
+  [pts]
+  (let [triples (partition 3 1 (take (+ 2 (count pts)) (cycle pts)))
+        removable (map second (filter line? triples))]
+    (vecdiff pts removable)))
 
 ;; can I use reduce instead?
 ;; other recursion scheme?
+
 (defn clip-ears
   ([pts]
    (clip-ears pts []))
   
   ([pts tris]
-   (let [tri (into [] (take 3 pts))
+   (let [spts (simplify-segments pts)
+         tri (into [] (take 3 spts))
          keep [(first tri) (last tri)]
-         npts (concat keep (into [] (drop 3 pts)))]
+         npts (concat keep (into [] (drop 3 spts)))]
      (if (> (count npts) 2)
        (recur npts (conj tris tri))
        (conj tris tri)))))
@@ -483,8 +516,91 @@
          (empty?)
          (not))))
 
-(defn remove-inner-pts
+(defn trim
+  "Trim line a using line b."
+  [la lb]
+  (let [x (line-segment-intersection la lb)]
+    (when x
+      [[(first la) x]
+       [x (second la)]])))
+
+(defn trim-at-pt
+  [[a b] pt]
+  (when (and
+         (not= a pt)
+         (not= b pt)
+         (on-line? (add-z (mapv float pt)) (mapv add-z [a b])))
+    [[a pt]
+     [pt b]]))
+
+(defn trim-at-pts
+  [[a b] pts]
+  (let [pts (filter #(on-line? % (mapv add-z [a b])) (mapv add-z pts))]
+    (when (first pts)
+      (->> pts
+           (sort-by (partial distance a))
+           (mapv #(into [] (drop-last %)))
+           (concat [a])
+           (apply vector)
+           (#(conj % b))
+           (partition 2 1)
+           (mapv vec)))))
+
+(defn polygon->lines 
+  [pg]
+  (->> pg
+       (cycle)
+       (take (inc (count pg)))
+       (partition 2 1)))
+
+(defn endpoint?
+  [l pt]
+  (or (= (first l) pt)
+      (= (second l) pt)))
+
+(defn on-perimeter?
+  [pg pt]
+  (let [pt (add-z pt)
+        pg (mapv add-z pg)
+        lines (polygon->lines pg)]
+    (> (count (filter (partial on-line? pt) lines)) 0)))
+
+(defn order-lines
+  ([lines]
+   (let [start (first (sort-by (comp second first) lines))]
+     (order-lines lines start [start])))
+
+  ([lines [_ b] sorted]
+   (let [next (first (filter #(= b (first %)) lines))]
+     (if (= (count lines) (count sorted))
+       (mapv first sorted)
+       (recur lines next (conj sorted next))))))
+
+(defn polygon-union
   [pga pgb]
+  (let [xs (polygon-intersection pga pgb)
+        ;; trim lines at intersection points
+        ls (apply concat 
+                  (for [l (mapv vec (mapcat polygon->lines [pga pgb]))]
+                    (let [trims (->> #_(map #(trim-at-pts l [%]) xs)
+                                     [(trim-at-pts l xs)]
+                                     (filter #(not (nil? %))))]
+                      (if (> (count trims) 0)
+                        (apply concat trims)
+                        [l]))))
+        ;; remove degenerate lines (= pta ptb)
+        ls (filter #(not (= (first %) (second %))) ls)
+        ;; get lines that are not in polygon a
+        a (filter #(not (pt-inside? pga (midpoint %))) ls)
+        ;; get lines that are not in polygon b
+        b (filter #(not (pt-inside? pgb (midpoint %))) ls)
+        ;; get lines with midpoints on both perimeters
+        c (filter #(and (on-perimeter? pga (midpoint %))
+                        (on-perimeter? pgb (midpoint %))) ls)]
+    ls #_(->> (concat a b c)
+         (filter (complement nil?))
+         (into #{})
+         (order-lines))))
 
 (defn frep-union [f g]
   (fn [pt]
@@ -681,7 +797,7 @@
 
 (defn vertex
   [[x y z]]
-  {:history [`(vertex [~x ~y ~z])]
+  {:history `(vertex [~x ~y ~z])
    :frep (fn [pt]
            (distance [x y z] pt))
    :vertices [[x y z]]})
@@ -706,7 +822,7 @@
 
 (defn line
   [a b]
-  {:history [`(line ~a ~b)]
+  {:history `(line ~a ~b)
    :frep (frep-line a b)
    :vertices [a b]
    :curves [(brep-line a b)]})
@@ -760,7 +876,7 @@
 
 (defn circle
   [r]
-  {:history [`(circle ~r)]
+  {:history `(circle ~r)
    :frep (frep-circle r)
    :vertices [#_[0 0 0] [r 0 0] [0 r 0] [(- r) 0 0] [0 (- r) 0]]
    :curves [(brep-curve-circle [r 0 0] [0 r 0] [(- r) 0 0])]
@@ -835,7 +951,7 @@
 
 (defn triangle
   [a b c]
-  {:history [`(triangle ~a ~b ~c)]
+  {:history `(triangle ~a ~b ~c)
    :frep (frep-triangle a b c)
    :vertices [a b c]
    :curves (conj
@@ -870,7 +986,7 @@
 
 (defn polygon
   [pts]
-  {:history [`(polygon ~pts)]
+  {:history `(polygon ~pts)
    :frep (frep-polygon pts)
    :vertices (vec pts)
    :curves (mapv 
@@ -889,7 +1005,7 @@
 (defn polygon2
   [& paths]
   (let [paths (mapv vec paths)]
-    {:history [`(polygon2 ~@paths)]
+    {:history `(polygon2 ~@paths)
      :frep nil
      :vertices (apply concat paths)
      :curves (vec (mapcat (comp path->brep-lines close-path) paths))
