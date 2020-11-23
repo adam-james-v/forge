@@ -469,9 +469,46 @@
         xs (polygon-intersection pts [m pt])]
     (all-nearly? (first xs) pt)))
 
+(defn quadrant
+  [x y]
+  (let [mask [(pos? x) (pos? y)]]
+    (cond (= mask [ true  true]) 1
+          (= mask [false  true]) 2
+          (= mask [false false]) 3
+          (= mask [ true false]) 4)))
+
+(defn angle-from-pts2 
+  "Angle following RHR from p3p2 to p1p2"
+  [p1 p2 p3]
+  (let [[ax ay] (v- p1 p2)
+        [bx by] (v- p3 p2)
+        qa (quadrant ax ay)
+        qb (quadrant bx by)
+        theta-a (Math/atan2 ay ax)
+        theta-b (Math/atan2 by bx)]
+    (cond 
+      ;; la and lb both in same quadrant, always < 90deg
+      (= qa qb) (to-deg (- theta-b theta-a))
+      ;; qa greater than qb and 2 away [4 2] or [3 1]
+      (= 2 (- qa qb)) (- 360 theta-b theta-a)
+      ;; qb greater than qa and 2 away [2 4] or [1 3]
+      (= 2 (- qb qa)) (- theta-b theta-a)
+      (or
+       (= [qa qb] [2 1])
+       (= [qa qb] [4 3])) (- 180 (Math/abs theta-b) (Math/abs theta-a))
+      (or
+       (= [qa qb] [1 2])
+       (= [qa qb] [3 4])) (+ 180 (Math/abs theta-b) (Math/abs theta-a))
+      (or
+       (= [qa qb] [3 2])
+       (= [qa qb] [1 4])) (+ (Math/abs theta-b) (Math/abs theta-a))
+      (or
+       (= [qa qb] [2 3])
+       (= [qa qb] [4 1])) (+ 180 (Math/abs theta-b) (Math/abs theta-a)))))
+
 (defn acute?
   [p1 p2 p3]
-  (< (angle-from-pts p1 p2 p3) 180.0))
+  (< (angle-from-pts2 p1 p2 p3) 180.0))      
 
 (defn line?
   [[a b c]]
@@ -494,7 +531,7 @@
 ;; can I use reduce instead?
 ;; other recursion scheme?
 
-(defn clip-ears
+#_(defn clip-ears
   ([pts]
    (clip-ears pts []))
   
@@ -506,6 +543,35 @@
      (if (> (count npts) 2)
        (recur npts (conj tris tri))
        (conj tris tri)))))
+
+(defn clip-ears
+  ([pts]
+   (clip-ears pts []))
+  
+  ([pts acc]
+   (let [spts (simplify-segments pts)
+         tris (->> (cycle spts)
+                   (partition 3 1)
+                   (take (count spts))
+                   (filter #(apply acute? %))
+                   (mapv #(into [] %)))
+         tri (first (for [tri tris]
+                      (let [xpts (remove (into #{} tri) (into #{} spts))
+                            clear (= 0 (count (filter #(pt-inside-convex? tri %) xpts)))]
+                        (when clear tri))))
+         npts (if tri 
+                (->> spts
+                     (filter (complement #{(second tri)}))
+                     (into []))
+                (->> spts
+                     (cycle)
+                     (drop 1)
+                     (take (count spts))
+                     (into [])))
+         acc (if tri (conj acc tri) acc)]
+     (if (> (count npts) 2)
+       (recur npts acc)
+       acc))))
 
 (defn pt-inside?
   [pts pt]
@@ -597,7 +663,7 @@
         ;; get lines with midpoints on both perimeters
         c (filter #(and (on-perimeter? pga (midpoint %))
                         (on-perimeter? pgb (midpoint %))) ls)]
-    ls #_(->> (concat a b c)
+    (->> (concat a b c)
          (filter (complement nil?))
          (into #{})
          (order-lines))))
