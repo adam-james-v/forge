@@ -1850,12 +1850,16 @@ As well, any polygon union should effectively produce the same polygon that woul
 (defn path->brep-lines
   [path]
   (mapv #(apply brep-line %) (partition 2 1 path)))
+#+END_SRC
 
+Below is a temporary polygon function that nils the FREP. This was done to allow me to make animations with concave polygon shapes. The FREP for generic polygons uses a union of frep triangles which are calculated with the delaunay triangulation. That triangulation method breaks for concave shapes (at least currently it does). So, the FREP for polygons is broken and needs to be fixed.
+
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
 (defn polygon2
   [& paths]
   (let [paths (mapv vec paths)]
     {:history `(polygon2 ~@paths)
-     :frep nil
+     :frep nil ;; see note above
      :vertices (apply concat paths)
      :curves (vec (mapcat (comp path->brep-lines close-path) paths))
      :surfaces (mapv brep-surface-polygon paths)}))

@@ -1006,7 +1006,7 @@
   [& paths]
   (let [paths (mapv vec paths)]
     {:history `(polygon2 ~@paths)
-     :frep nil
+     :frep nil ;; see note above
      :vertices (apply concat paths)
      :curves (vec (mapcat (comp path->brep-lines close-path) paths))
      :surfaces (mapv brep-surface-polygon paths)}))
