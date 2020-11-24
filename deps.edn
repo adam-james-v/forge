@@ -5,6 +5,7 @@
   org.clojure/math.numeric-tower {:mvn/version "0.0.4"}
   org.clojure/core.logic         {:mvn/version "0.8.11"}
   same/ish                       {:mvn/version "0.1.4"}
+  scad-clj/scad-clj              {:local/root  "../scad-clj"} #_{:mvn/version "0.5.3"}
   occjava                        {:local/root  "./resources/occjava.jar"}}
 
  :paths ["src" "resources"]

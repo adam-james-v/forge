@@ -1,6 +1,8 @@
 (ns forge.proto
   (:require [forge.delaunay :as delaunay]
-            [same :refer [ish? zeroish?]]))
+            [same :refer [ish? zeroish?]]
+            [scad-clj.model :as scad]
+            [scad-clj.csg :refer [write-csg]]))
 
 (defn nearly?
   "compare two float values for approximate equality.

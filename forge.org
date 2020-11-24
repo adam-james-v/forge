@@ -18,6 +18,7 @@
   org.clojure/math.numeric-tower {:mvn/version "0.0.4"}
   org.clojure/core.logic         {:mvn/version "0.8.11"}
   same/ish                       {:mvn/version "0.1.4"}
+  scad-clj/scad-clj              {:local/root  "../scad-clj"} #_{:mvn/version "0.5.3"}
   occjava                        {:local/root  "./resources/occjava.jar"}}
 
  :paths ["src" "resources"]
@@ -263,7 +264,9 @@ To keep it all straight.
 #+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
 (ns forge.proto
   (:require [forge.delaunay :as delaunay]
-            [same :refer [ish? zeroish?]]))
+            [same :refer [ish? zeroish?]]
+            [scad-clj.model :as scad]
+            [scad-clj.csg :refer [write-csg]]))
 
 #+END_SRC
 
@@ -1998,6 +2001,115 @@ Below is a temporary polygon function that nils the FREP. This was done to allow
 #+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
 
 #+END_SRC
+
+* freecad-experiments
+This some experimentation to see how I can interface forge with FreeCAD to help with file exports so that I can get 'minimum viable product' soon.
+
+Eventually, I want a stable, self-built STEP exporter so that I don't have FreeCAD and OpenCASCADE as heavy dependencies, but this might be ok as a start.
+
+The process pipeline already works like this:
+
+scad-clj -> scad(file) -> csg(file via OpenSCAD) -> step(file via FreeCAD script)
+
+Ideally, this pipeline can work without OpenSCAD,this could be done by modifying scad-clj to output csg directly
+
+** freecad-macro-script
+This script makes a cylinder, changes its radius and height, saves a freecad Document and then exports the cylinder to a STEP file.
+
+Idea could be to generate valid macro scripts from my clj library which then can be run with a (sh ...) call.
+#+begin_src python
+# -*- coding: utf-8 -*-
+
+import FreeCAD
+import Import
+import Part
+
+App.newDocument("a")
+#App.setActiveDocument("a")
+
+App.ActiveDocument.addObject("Part::Cylinder","c")
+App.ActiveDocument.recompute()
+
+FreeCAD.getDocument("a").getObject("c").Radius = '50 mm'
+FreeCAD.getDocument("a").getObject("c").Height = '12 mm'
+App.getDocument("a").saveAs(u"/Users/adam/dev/forge/out/fcout.FCStd")
+
+__objs__=[]
+__objs__.append(FreeCAD.getDocument("a").getObject("c"))
+Import.export(__objs__,u"/Users/adam/dev/forge/out/fcout.step")
+
+del __objs__
+#+end_src
+
+** scad-script
+Create a scad script and use SCAD to export to .csg.
+It would also be possible to directly create a .csg file from clj.
+
+Then, use FreeCAD to import .csg and then export the whole thing as a step file (using similar approach to above).
+
+
+*** export-script
+csg->step via freecad cmd
+#+begin_src python :tangle ./fcscript.py
+import FreeCAD
+import importCSG
+import Import
+
+App.newDocument("a")
+doc = FreeCAD.getDocument("a")
+
+importCSG.insert(u"/Users/adam/dev/forge/out/scadout.csg", "a")
+
+__objs__ = doc.RootObjects
+Import.export(__objs__, u"/Users/adam/dev/forge/out/fcout.step")
+
+del __objs__
+
+#+end_src
+
+*** execute the py script
+Just execute the script directly.
+
+#+begin_src clojure
+(ns forge.export
+  (:require [forge.proto :as f]
+            [scad-clj.csg :refer [write-csg]]
+            [clojure.string :as s]
+            [clojure.java.shell :refer [sh]]))
+
+(defn exporter-script [fin fout]
+  (str "
+import FreeCAD
+import importCSG
+import Import
+
+App.newDocument(\"a\")
+doc = FreeCAD.getDocument(\"a\")
+importCSG.insert(u\"/Users/adam/dev/forge/" fin "\", \"a\")
+__objs__ = doc.RootObjects
+Import.export(__objs__, u\"/Users/adam/dev/forge/" fout "\")
+del __objs__"))
+
+(defn scad->step
+  [f scad-block]
+  (->> scad-block
+       (write-csg)
+       (spit "out/scadout.csg"))
+  (->> f
+       (exporter-script "out/scadout.csg")
+       (spit "out/fcscript.py"))
+  (sh "freecad" "out/fcscript.py")
+  (sh "rm" "-rf" 
+      "fcscript.py" 
+      "parsetab.py"
+      "__pycache__")
+  (sh "rm" "-rf" 
+      "out/scadout.csg"
+      "out/fcscript.py"
+      "out/parsetab.py"
+      "out/__pycache__"))
+
+#+end_src
 
 * next-up
 ** angle-from-pts (handle > 180 cases)
