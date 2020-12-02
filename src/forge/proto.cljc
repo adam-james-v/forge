@@ -2,6 +2,7 @@
   (:require [forge.delaunay :as delaunay]
             [same :refer [ish? zeroish?]]
             [scad-clj.model :as scad]
+            [scad-clj.scad :refer [write-scad]]
             [scad-clj.csg :refer [write-csg]]))
 
 (defn nearly?
@@ -176,16 +177,16 @@
   "determine if a point is on a capped line"
   [pt line]
   (let [[a b] line
-        ap (mapv - a pt)
-        bp (mapv - b pt)]
+        ap (v- a pt)
+        bp (v- b pt)]
     (if (or (all-nearly? pt a) 
             (all-nearly? pt b))
       true
       (let [na (normalize ap)
             nb (normalize bp)]
         (and 
-             (all-nearly? (cross* ap bp) [0 0 0]) 
-             (not (all-nearly? na nb)))))))
+         (all-nearly? (cross* ap bp) [0 0 0]) 
+         (not (all-nearly? na nb)))))))
 
 (defn on-line-inf?
   "determine if a point is on an infinitely extending line"
@@ -387,22 +388,7 @@
         z (range (last minc) (last maxc) zs)]
     [x y z]))
 
-(defn on-line?
-  "determine if a point is on a capped line"
-  [pt line]
-  (let [[a b] line
-        ap (v- a pt)
-        bp (v- b pt)]
-    (if (or (all-nearly? pt a) 
-            (all-nearly? pt b))
-      true
-      (let [na (normalize ap)
-            nb (normalize bp)]
-        (and 
-         (all-nearly? (cross* ap bp) [0 0 0]) 
-         (not (all-nearly? na nb)))))))
-
-(defn fake-on-line?
+#_(defn fake-on-line?
   "determine if a point is on a capped line"
   [pt line]
   (let [[a b] line
@@ -533,19 +519,6 @@
 ;; can I use reduce instead?
 ;; other recursion scheme?
 
-#_(defn clip-ears
-  ([pts]
-   (clip-ears pts []))
-  
-  ([pts tris]
-   (let [spts (simplify-segments pts)
-         tri (into [] (take 3 spts))
-         keep [(first tri) (last tri)]
-         npts (concat keep (into [] (drop 3 spts)))]
-     (if (> (count npts) 2)
-       (recur npts (conj tris tri))
-       (conj tris tri)))))
-
 (defn clip-ears
   ([pts]
    (clip-ears pts []))
@@ -669,6 +642,45 @@
          (filter (complement nil?))
          (into #{})
          (order-lines))))
+
+(defn offset-edge
+  [[a b] d]
+  (let [p (perpendicular-2d (v- b a))
+        pd (v* (normalize p) (repeat (- d)))
+        xa (v+ a pd)
+        xb (v+ b pd)]
+    [xa xb]))
+
+(defn cycle-pairs
+  [pts]
+  (let [n (count pts)]
+    (vec (take n (partition 2 1 (cycle pts))))))
+
+(defn every-other
+  [v]
+  (let [n (count v)]
+    (map #(get v %) (filter even? (range n)))))
+
+(defn wrap-list-once
+  [s]
+  (conj (drop-last s) (last s)))
+
+(defn offset
+  [pts d]
+  (let [edges (cycle-pairs pts)
+        opts (mapcat #(offset-edge % d) edges)
+        oedges (every-other (cycle-pairs opts))
+        edge-pairs (cycle-pairs oedges)]
+    (wrap-list-once (map #(apply line-intersection %) edge-pairs))))
+
+(def sample-model
+  {:history "the quoted most recent fn call with eval'd args."
+   :frep "the single FREP function which produces the shape"
+   :ref "list of reference elements like center points and lines"
+   :vertices "list of vertices, excluding ref elements"
+   :curves "list of parametric curve functions"
+   :surfaces "list of parametric surface functions"
+   :volumes "list of volume functions"})
 
 (defn frep-union [f g]
   (fn [pt]
@@ -835,8 +847,7 @@
      (merge-with
       (comp vec concat)
       shape
-      {:history [`(extrude ~shape ~h)]
-       :vertices vertices
+      {:vertices vertices
        :curves (concat
                 (mapv #(brep-translate % [0 0 h]) (:curves shape))
                 (mapv #(brep-line %1 %2) (:vertices shape) vertices))
@@ -844,7 +855,8 @@
                   [(brep-translate (first (:surfaces shape)) [0 0 h])]
                   (mapv #(brep-curve-extrude % h) (:curves shape)))
        :volumes [(brep-surface-extrude (first (:surfaces shape)) h)]})
-     {:frep (frep-extrude (:frep shape) h)})))
+     {:history `(extrude ~shape ~h)
+      :frep (frep-extrude (:frep shape) h)})))
 
 (defn brep-curve-straight-sweep
   [c1 c2]
@@ -973,12 +985,12 @@
 
 (defn brep-curve-arc
   [a b c]
-  (let [circle (brep-curve-circle a b c)
+  (let [f (brep-curve-circle a b c)
         cp (center-from-pts a b c)
-        angle (a cp c)]
+        angle (angle-from-pts a cp c)]
     (fn [t]
-      (let [t (* t (/ angle 360))]
-        (circle t)))))
+      (let [t (* t (/ angle 360.0))]
+        (f t)))))
 
 ;; this is not correct. ...-straight-sweep does
 ;; not account for rotating based on path normal
@@ -989,6 +1001,8 @@
         c2 (brep-curve-arc a b c)]
     (fn [u v]
       ((brep-curve-straight-sweep c1 c2) u v))))
+
+
 
 (defn frep-triangle
   [a b c]
@@ -1036,10 +1050,12 @@
        0])))
 
 (defn frep-polygon
-  [pts]
-  (let [tris (map
+  [paths]
+  (let [pts (apply concat paths) ;; temporary avoidance of path merge
+        tris (map
               #(apply frep-triangle %)
-              (:triangles (delaunay/triangulate pts)))]
+              (clip-ears pts)
+              (:triangles (clip-ears pts)))]
     (reduce frep-union tris)))
 
 (defn brep-curve-polygon
@@ -1052,9 +1068,9 @@
         tris (mapv xf (:triangles (delaunay/triangulate pts)))]
     (apply brep-surface-union (map #(apply brep-surface-triangle %) tris))))
 
-(defn polygon
+(defn polygon-old
   [pts]
-  {:history `(polygon ~pts)
+  {:history `(polygon-old ~pts)
    :frep (frep-polygon pts)
    :vertices (vec pts)
    :curves (mapv 
@@ -1070,11 +1086,11 @@
   [path]
   (mapv #(apply brep-line %) (partition 2 1 path)))
 
-(defn polygon2
+(defn polygon
   [& paths]
   (let [paths (mapv vec paths)]
-    {:history `(polygon2 ~@paths)
-     :frep nil ;; see note above
+    {:history `(polygon ~@paths)
+     :frep nil #_(frep-polygon paths)
      :vertices (apply concat paths)
      :curves (vec (mapcat (comp path->brep-lines close-path) paths))
      :surfaces (mapv brep-surface-polygon paths)}))
@@ -1124,5 +1140,3 @@
       (max (- x l) (- (- l) x)
            (- y w) (- (- w) y)
            (- z h) (- (- h) z)))))
-
-
