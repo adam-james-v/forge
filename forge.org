@@ -12,14 +12,15 @@
 #+NAME: deps.edn
 #+begin_src clojure :tangle ./deps.edn
 {:deps 
- {org.clojure/clojure            {:mvn/version "1.10.1"}
+ {org.clojure/clojure            {:mvn/version "1.10.2"}
   org.clojure/clojurescript      {:mvn/version "1.10.597"}
   org.clojure/test.check         {:mvn/version "0.9.0"}
   org.clojure/math.numeric-tower {:mvn/version "0.0.4"}
   org.clojure/core.logic         {:mvn/version "0.8.11"}
+  hawk/hawk                      {:mvn/version "0.2.11"}
   same/ish                       {:mvn/version "0.1.4"}
   scad-clj/scad-clj              {:local/root  "../scad-clj"} #_{:mvn/version "0.5.3"}
-  occjava                        {:local/root  "./resources/occjava.jar"}}
+  #_occjava #_{:local/root  "./resources/occjava.jar"}}
 
  :paths ["src" "resources"]
 
@@ -40,6 +41,29 @@ Currently presented here without a license as things are still highly experiment
 
 #+END_SRC
 
+* next-up
+** angle-from-pts (handle > 180 cases)
+** spec for polygons, lines, pts
+** unit tests for polygon-union
+** fix on-line? to handle 2d without issues
+** proper project management approach for Forge lib work
+I need to manage this project more professionally.
+
+First idea is to learn 
+ org-agenda   <--+-- start here because I think it'll be the most fun!
+                 |
+ org-roam     <--+
+
+see if those tools can help me manage this more thoroughly.
+
+Could also use github more effectively to basic PM
+
+Maybe trello?
+
+** change how :history is tracked in shape maps
+History right now grows very rapidly because all args are passed in as values and every step is appended to the history list. So, the most current step contains all previous steps as values in the tree already.
+
+I think instead I can just overwrite the history key with the current function and its args as values. This should properly capture the whole code tree essentially as the user programmed it.
 * design
 ** Introduction
 *** Pitch
@@ -260,6 +284,30 @@ To keep it all straight.
  integration
 
 #+end_src
+** 2021-initial-notes
+I need to productize fairly quickly.
+
+Necessary features for acceptable 'paid prototyping':
+- STEP export 
+  - do this by creating a Server/Client Webapp. FreeCAD first as STEP backend
+  - upgrade from FreeCAD to proper Kernel (OCCT...)
+  - alternatively, use CadQuery 2.0 as the intermediate.
+- WebGL 3D renders
+- Drawing Export
+  - PDF
+  - Parametric SVGs in design docs
+  - DXF
+
+Very soon after initial contracts, I suspect I'll need:
+- native export
+  - Macro generators for VBA (SW and Inventor)
+  - AutoLISP generators
+
+- DesignDoc Editor App
+  - let users design their own part/assembly docs with some basic notebook style tooling
+
+Long term, I want to build my own CAD Kernel, native in Clojure so that CLJ/CLJS can be fully portable without any connection to a server. This will be useful for powerful app building -> custom CAD programs for very niche design industries.
+
 * ns
 #+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
 (ns forge.proto
@@ -269,7 +317,162 @@ To keep it all straight.
             [scad-clj.scad :refer [write-scad]]
             [scad-clj.csg :refer [write-csg]]))
 
+;; hello 
+
 #+END_SRC
+
+* model
+** ns
+The namespace declaration.
+#+begin_src clojure :tangle ./src/forge/model.cljc
+(ns scad-clj.model2
+  (:require [clojure.walk :refer [postwalk]]))
+
+#+end_src
+
+** utils
+#+begin_src clojure :tangle ./src/forge/model.cljc
+(def pi Math/PI)
+(def tau (* 2 pi))
+
+(defn rad->deg
+  [rad]
+  (/ (* rad 180) pi))
+
+(defn deg->rad
+  [deg]
+  (* (/ deg 180) pi))
+
+#+end_src
+
+** 2D
+#+begin_src clojure :tangle ./src/forge/model.cljc
+(defn square
+  [x y]
+  [:square {:x x :y y}])
+
+(defn circle
+  [r]
+  [:circle {:r r}])
+
+(defn polygon
+  ([pts]
+   [:polygon {:pts pts}])
+  ([pts paths]
+   [:polygon {:pts pts :paths paths}]))
+
+(defn projection
+  [cut & block]
+  [:projection {:cut cut} block])
+
+#+end_src
+
+** 3D
+#+begin_src clojure :tangle ./src/forge/model.cljc
+(defn sphere
+  [r]
+  [:sphere {:r r}])
+
+(defn cube
+  [x y z]
+  [:cube {:x x :y y :z z}])
+
+(defn cylinder
+  ([r h]
+   [:cylinder {:r r :h h}])
+  ([r1 r2 h]
+   [:cylinder {:r1 r1 :r2 r2 :h h}]))
+
+(defn polyhedron
+  [pts faces]
+  [:polyhedron {:pts pts :faces faces}])
+
+(defn extrude-linear
+  [{:keys [height twist convexity center slices scale] :as opts} & block]
+  [:extrude-linear opts block])
+
+(defn extrude-rotate
+  [{:keys [convexity angle] :as opts} & block]
+  [:extrude-rotate {:convexity convexity
+                    :angle angle} block])
+
+#+end_src
+
+** transforms
+#+begin_src clojure :tangle ./src/forge/model.cljc
+(defn group
+  [& block]
+  [:group block])
+
+(defn resize
+  [[x y z] & block]
+  [:resize {:x x :y y :z z} block])
+
+(defn translate
+  [[x y z] & block]
+  [:translate {:x x :y y :z z} block])
+
+(defn rotatev
+  [a [x y z] block]
+  [:rotatev {:a a :x x :y y :z z} block])
+
+(defn rotatec
+  [[x y z] block]
+  [:rotatec {:x x :y y :z z} block])
+
+(defn rotate
+  [& block]
+  (if (number? (first block))
+    (rotatev (first block) (second block) (drop 2 block))
+    (rotatec (first block) (rest block))))
+
+(defn scale
+  [[x y z] & block]
+  [:scale {:x x :y y :z z} block])
+
+(defn mirror
+  [[x y z] & block]
+  [:mirror {:x x :y y :z z} block])
+
+(defn color
+  [[r g b a] & block]
+  [:color {:r r :g g :b b :a a} block])
+
+(defn hull
+  [& block]
+  [:hull {} block])
+
+(defn offset
+  [opts & block]
+  (if (number? opts)
+    [:offset {:r opts} block]
+    [:offset opts block]))
+
+(defn minkowski
+  [& block]
+  [:minkowski {} block])
+
+(defn multmatrix
+  [m & block]
+  [:multmatrix {:m m} block])
+
+#+end_src
+
+** boolean
+#+begin_src clojure :tangle ./src/forge/model.cljc
+(defn union
+  [& forms]
+  [:union {} forms])
+
+(defn intersection
+  [& forms]
+  [:intersection {} forms])
+
+(defn difference
+  [& forms]
+  [:difference {} forms])
+
+#+end_src
 
 * splines-proto
 try again with pomax's tutorials
@@ -729,7 +932,8 @@ and re-implemented with clojure.test library.
         l2 (distance p3 p2)
         n (dot* v1 v2)
         d (Math/abs (* l1 l2))]
-    (to-deg (Math/acos (/ n d)))))
+    (when (not (= 0.0 (float d)))
+      (to-deg (Math/acos (/ n d))))))
 
 ;; https://math.stackexchange.com/a/1743505
 (defn center-from-pts
@@ -974,7 +1178,11 @@ continue the algorithm...
           (= mask [false  true]) 2
           (= mask [false false]) 3
           (= mask [ true false]) 4)))
+#+end_src
 
+The angle-from-pts2 implementation has an issue with ambiguity of quadrant. take [1 0] and [0 1] (and [-1 0] and [0 -1]). The zero isn't positive or negative so causes incorrect quadrant classification which breaks the conditional branch logic.
+
+#+begin_src clojure :tangle ./src/forge/proto.cljc
 (defn angle-from-pts2 
   "Angle following RHR from p3p2 to p1p2"
   [p1 p2 p3]
@@ -982,11 +1190,11 @@ continue the algorithm...
         [bx by] (v- p3 p2)
         qa (quadrant ax ay)
         qb (quadrant bx by)
-        theta-a (Math/atan2 ay ax)
-        theta-b (Math/atan2 by bx)]
+        theta-a (to-deg (Math/atan2 ay ax))
+        theta-b (to-deg (Math/atan2 by bx))]
     (cond 
       ;; la and lb both in same quadrant, always < 90deg
-      (= qa qb) (to-deg (- theta-b theta-a))
+      (= qa qb) (- theta-b theta-a)
       ;; qa greater than qb and 2 away [4 2] or [3 1]
       (= 2 (- qa qb)) (- 360 theta-b theta-a)
       ;; qb greater than qa and 2 away [2 4] or [1 3]
@@ -1171,7 +1379,10 @@ My angles-from-pts fn needs to be changed because it will only report the smalle
      (if (= (count lines) (count sorted))
        (mapv first sorted)
        (recur lines next (conj sorted next))))))
+#+end_src
 
+*** polygon-union
+#+begin_src clojure :tangle ./src/forge/proto.cljc
 (defn polygon-union
   [pga pgb]
   (let [xs (polygon-intersection pga pgb)
@@ -1200,6 +1411,36 @@ My angles-from-pts fn needs to be changed because it will only report the smalle
 
 #+end_src
 
+*** polygon-difference
+#+begin_src clojure :tangle ./src/forge/proto.cljc
+(defn polygon-difference
+  "Polygon B Cuts Polygon A"
+  [pga pgb]
+  (let [xs (polygon-intersection pga pgb)
+        ;; trim lines at intersection points
+        ls (apply concat 
+                  (for [l (mapv vec (mapcat polygon->lines [pga pgb]))]
+                    (let [trims (->> #_(map #(trim-at-pts l [%]) xs)
+                                     [(trim-at-pts l xs)]
+                                     (filter #(not (nil? %))))]
+                      (if (> (count trims) 0)
+                        (apply concat trims)
+                        [l]))))
+        ;; remove degenerate lines (= pta ptb)
+        ls (filter #(not (= (first %) (second %))) ls)
+        ;; get lines that are in polygon a
+        a (filter #(pt-inside? pga (midpoint %)) ls)
+        ;; get lines that are in polygon b
+        b (filter #(pt-inside? pgb (midpoint %)) ls)
+        ;; get lines with midpoints on both perimeters
+        c (filter #(and (on-perimeter? pga (midpoint %))
+                        (on-perimeter? pgb (midpoint %))) ls)]
+    (->> (concat a b c)
+         (filter (complement nil?))
+         (into #{})
+         (order-lines))))
+
+#+end_src
 
 - there are cases where a segment has >1 intersection point along itself. Currently, it gets 'passed over' once a single trim has occurred on it. Technically, need some sort of iteration or recursion over this so that new trimmed segments are also checked for trims with other intersections
 
@@ -2073,6 +2314,7 @@ Just execute the script directly.
 #+begin_src clojure
 (ns forge.export
   (:require [forge.proto :as f]
+            [scad-clj.model :refer :all]
             [scad-clj.csg :refer [write-csg]]
             [clojure.string :as s]
             [clojure.java.shell :refer [sh]]))
@@ -2111,26 +2353,233 @@ del __objs__"))
 
 #+end_src
 
-* next-up
-** angle-from-pts (handle > 180 cases)
-** spec for polygons, lines, pts
-** unit tests for polygon-union
-** fix on-line? to handle 2d without issues
-** proper project management approach for Forge lib work
-I need to manage this project more professionally.
+* watcher-proto
+#+begin_src clojure :tangle ./w.cljc
+(ns forge.watcher
+  (:require [clojure.string :as st]
+            [scad-clj.model :refer :all]
+            [scad-clj.scad :refer [write-scad]]
+            [hawk.core :as hawk]))
 
-First idea is to learn 
- org-agenda   <--+-- start here because I think it'll be the most fun!
-                 |
- org-roam     <--+
+(defn design-watcher [f]
+  (hawk/watch!
+   [{:paths [f]
+     :handler
+     (fn [ctx e]
+       (require '[scad-clj.model :refer :all]
+                '[scad-clj.scad :refer [write-scad]])
+       (->> f
+            slurp
+            (format "[%s]")
+            load-string
+            (filter (complement var?))
+            write-scad
+            (spit "out.scad"))
+       ctx)}]))
 
-see if those tools can help me manage this more thoroughly.
+(defn -main [args] (design-watcher args))
 
-Could also use github more effectively to basic PM
+#+end_src
+* STEP-hacks
+** utils
+#+begin_src clojure
+(defn l# [n] (str "#" n))
 
-Maybe trello?
+#+end_src
 
-** change how :history is tracked in shape maps
-History right now grows very rapidly because all args are passed in as values and every step is appended to the history list. So, the most current step contains all previous steps as values in the tree already.
+** header
+#+begin_src clojure
+(defn file-name [author] (str "FILE_NAME('','',('" author "'),(''),'','','');"))
+(defn file-description [descr] (str "FILE_DESCRIPTION(('" descr "'),'2;1');"))
+(def file-schema "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));")
+(def application-protocol-definition "#1 = APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2000,#2);")
+(def application-context "#2 = APPLICATION_CONTEXT('core data for automotive mechanical design processes');")
 
-I think instead I can just overwrite the history key with the current function and its args as values. This should properly capture the whole code tree essentially as the user programmed it.
+(defn step-header
+  [author descr]
+  (apply str (interpose 
+              "\n" 
+              ["ISO-10303-21;"
+               "HEADER;"
+               (file-name author)
+               (file-description descr)
+               file-schema
+               "ENDSEC;"
+               "DATA;"
+               application-protocol-definition
+               application-context])))
+#+end_src
+
+** footer
+#+begin_src clojure
+(defn footer-a 
+  [ln]
+  (str (l# ln) " = "
+       "( GEOMETRIC_REPRESENTATION_CONTEXT(2) 
+        PARAMETRIC_REPRESENTATION_CONTEXT()
+        REPRESENTATION_CONTEXT('2D SPACE','') ); "))
+
+(defn footer-b
+  [ln]
+  (str (l# ln) " = "
+       "( GEOMETRIC_REPRESENTATION_CONTEXT(3) "
+       "GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT(("
+       (l# (+ ln 4)) ")) GLOBAL_UNIT_ASSIGNED_CONTEXT(("
+       (l# (+ ln 1)) ","
+       (l# (+ ln 2)) ","
+       (l# (+ ln 3)) ")) REPRESENTATION_CONTEXT('Context #1', '3D Context with UNIT and UNCERTAINTY') );"))
+
+(defn footer-units-section
+  [ln]
+  (str 
+   (l# ln) " = " 
+   "( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.) );\n"
+   (l# (+ ln 1)) " = "
+   "( NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.) );\n"
+   (l# (+ ln 2)) " = "
+   "( NAMED_UNIT(*) SI_UNIT($,.STERADIAN.) SOLID_ANGLE_UNIT() );\n"
+   (l# (+ ln 3)) " = " 
+   "UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07),"
+   (l# ln)
+   ",'distance_accuracy_value','confusion accuracy');\n"
+   (l# (+ ln 4)) " = "
+   "PRODUCT_RELATED_PRODUCT_CATEGORY('part',$,(#7));\n"))
+
+(defn step-footer
+  [ln]
+  (apply str (interpose 
+              "\n" 
+              [(footer-a ln)
+               (footer-b (+ ln 1))
+               (footer-units-section (+ ln 2))
+               "ENDSEC;"
+               "END-ISO-10303-21;"])))
+#+end_src
+
+** circle?
+#+begin_src clojure
+(defn step-circle
+  [r]
+  (str "#3 = SHAPE_DEFINITION_REPRESENTATION(#4,#10);
+#4 = PRODUCT_DEFINITION_SHAPE('','',#5);
+#5 = PRODUCT_DEFINITION('design','',#6,#9);
+#6 = PRODUCT_DEFINITION_FORMATION('','',#7);
+#7 = PRODUCT('wumpus','chumpus','',(#8));
+#8 = PRODUCT_CONTEXT('',#2,'mechanical');
+#9 = PRODUCT_DEFINITION_CONTEXT('part definition',#2,'design');
+#10 = MANIFOLD_SURFACE_SHAPE_REPRESENTATION('',(#11,#15),#42);
+#11 = AXIS2_PLACEMENT_3D('',#12,#13,#14);
+#12 = CARTESIAN_POINT('',(0.,0.,0.));
+#13 = DIRECTION('',(0.,0.,1.));
+#14 = DIRECTION('',(1.,0.,-0.));
+#15 = SHELL_BASED_SURFACE_MODEL('',(#16));
+#16 = OPEN_SHELL('',(#17));
+#17 = ADVANCED_FACE('',(#18),#31,.T.);
+#18 = FACE_BOUND('',#19,.T.);
+#19 = EDGE_LOOP('',(#20));
+#20 = ORIENTED_EDGE('',*,*,#21,.T.);
+#21 = EDGE_CURVE('',#22,#22,#24,.T.);
+#22 = VERTEX_POINT('',#23);
+#23 = CARTESIAN_POINT('',(" (float r) ",0.,0.));
+#24 = SURFACE_CURVE('',#25,(#30),.PCURVE_S1.);
+#25 = CIRCLE('',#26," (float r) ");
+#26 = AXIS2_PLACEMENT_3D('',#27,#28,#29);
+#27 = CARTESIAN_POINT('',(0.,0.,0.));
+#28 = DIRECTION('',(0.,0.,1.));
+#29 = DIRECTION('',(1.,0.,0.));
+#30 = PCURVE('',#31,#36);
+#31 = PLANE('',#32);
+#32 = AXIS2_PLACEMENT_3D('',#33,#34,#35);
+#33 = CARTESIAN_POINT('',(0.,1.232712559332E-15,0.));
+#34 = DIRECTION('',(0.,0.,1.));
+#35 = DIRECTION('',(1.,0.,0.));
+#36 = DEFINITIONAL_REPRESENTATION('',(#37),#41);
+#37 = CIRCLE('',#38," (float r) ");
+#38 = AXIS2_PLACEMENT_2D('',#39,#40);
+#39 = CARTESIAN_POINT('',(0.,-1.232712559332E-15));
+#40 = DIRECTION('',(1.,0.));"))
+#+end_src
+
+** linelist
+Step files have numbered 'commands'. The numbers look like: #30, #32, etc. and can be thought of like variables, but forward references are allowed.
+
+If I build up a file as a seq. of strings, I can apply numbers at the last step before exporting. This doesn't yet solve the need to fix refs to other line numbers in each line.
+
+
+Maybe I should have all step export functions work with higher-rder functions.
+
+So, user runs (circle 6)
+Which returns a higher-order function expecting the 'seed line number'.
+
+that function will then return a complete list with all numbers filled in properly once the seed is passed in.
+
+#+begin_src clojure
+(defn apply-numbers
+  [s]
+  (for [ln (range (count s))]
+    (str (l# (inc ln)) " = " (get s ln))))
+
+#+end_src
+
+** lame-step-export
+#+begin_src clojure
+(defn lame
+  [r]
+  (str (step-header "adam-james" "first step export... barely counts, but is still something!")
+       (step-circle r)
+       (step-footer 41)))
+
+#+end_src
+** PROTO-STEP-EXPORT
+This is a working setup that can export STEP files from SCAD-based .csg files. It uses my local fork of scad-clj to generate .csg files and then run a python script that converts .csg to STEP via the freecad CLI.
+
+This is fine for Proof of Concept, but is a bit clunky and won't work on any web examples without running a server.
+
+*** TODO fix exporter-script to not need hardcoded file paths.
+
+#+begin_src clojure ./src/forge/export.clj
+(ns forge.export
+  (:require [scad-clj.model :refer :all]
+            [scad-clj.csg :refer [write-csg]]
+            [clojure.string :as st]
+            [clojure.java.shell :refer [sh]]))
+
+(defn exporter-script [fin fout]
+  (str "
+import FreeCAD
+import importCSG
+import Import
+
+App.newDocument(\"a\")
+doc = FreeCAD.getDocument(\"a\")
+importCSG.insert(u\"/Users/adam/design/capilano/" fin "\", \"a\")
+__objs__ = doc.RootObjects
+Import.export(__objs__, u\"/Users/adam/design/capilano/" fout "\")
+del __objs__"))
+
+(defn scad->step
+  [f scad-block]
+  (->> scad-block
+       (write-csg)
+       (spit "scadout.csg"))
+  (->> f
+       (exporter-script "scadout.csg")
+       (spit "fcscript.py"))
+  (sh "freecad" "fcscript.py")
+  (sh "rm" "-rf" 
+      "fcscript.py"
+      "parsetab.py"
+      "scadout.csg"
+      "__pycache__"))
+
+(defn clj->step
+  [f]
+  (let [fout (-> f (st/split #"\.") first (str ".step"))]
+    (->> f
+         slurp
+         (format "[%s]")
+         load-string
+         (filter (complement var?))
+         (scad->step fout))))
+
+#+end_src

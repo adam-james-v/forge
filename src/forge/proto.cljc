@@ -5,6 +5,8 @@
             [scad-clj.scad :refer [write-scad]]
             [scad-clj.csg :refer [write-csg]]))
 
+;; hello
+
 (defn nearly?
   "compare two float values for approximate equality.
    
@@ -256,7 +258,8 @@
         l2 (distance p3 p2)
         n (dot* v1 v2)
         d (Math/abs (* l1 l2))]
-    (to-deg (Math/acos (/ n d)))))
+    (when (not (= 0.0 (float d)))
+      (to-deg (Math/acos (/ n d))))))
 
 ;; https://math.stackexchange.com/a/1743505
 (defn center-from-pts
@@ -472,11 +475,11 @@
         [bx by] (v- p3 p2)
         qa (quadrant ax ay)
         qb (quadrant bx by)
-        theta-a (Math/atan2 ay ax)
-        theta-b (Math/atan2 by bx)]
+        theta-a (to-deg (Math/atan2 ay ax))
+        theta-b (to-deg (Math/atan2 by bx))]
     (cond 
       ;; la and lb both in same quadrant, always < 90deg
-      (= qa qb) (to-deg (- theta-b theta-a))
+      (= qa qb) (- theta-b theta-a)
       ;; qa greater than qb and 2 away [4 2] or [3 1]
       (= 2 (- qa qb)) (- 360 theta-b theta-a)
       ;; qb greater than qa and 2 away [2 4] or [1 3]
@@ -635,6 +638,33 @@
         a (filter #(not (pt-inside? pga (midpoint %))) ls)
         ;; get lines that are not in polygon b
         b (filter #(not (pt-inside? pgb (midpoint %))) ls)
+        ;; get lines with midpoints on both perimeters
+        c (filter #(and (on-perimeter? pga (midpoint %))
+                        (on-perimeter? pgb (midpoint %))) ls)]
+    (->> (concat a b c)
+         (filter (complement nil?))
+         (into #{})
+         (order-lines))))
+
+(defn polygon-difference
+  "Polygon B Cuts Polygon A"
+  [pga pgb]
+  (let [xs (polygon-intersection pga pgb)
+        ;; trim lines at intersection points
+        ls (apply concat 
+                  (for [l (mapv vec (mapcat polygon->lines [pga pgb]))]
+                    (let [trims (->> #_(map #(trim-at-pts l [%]) xs)
+                                     [(trim-at-pts l xs)]
+                                     (filter #(not (nil? %))))]
+                      (if (> (count trims) 0)
+                        (apply concat trims)
+                        [l]))))
+        ;; remove degenerate lines (= pta ptb)
+        ls (filter #(not (= (first %) (second %))) ls)
+        ;; get lines that are in polygon a
+        a (filter #(pt-inside? pga (midpoint %)) ls)
+        ;; get lines that are in polygon b
+        b (filter #(pt-inside? pgb (midpoint %)) ls)
         ;; get lines with midpoints on both perimeters
         c (filter #(and (on-perimeter? pga (midpoint %))
                         (on-perimeter? pgb (midpoint %))) ls)]
