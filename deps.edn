@@ -6,7 +6,7 @@
   org.clojure/core.logic         {:mvn/version "0.8.11"}
   hawk/hawk                      {:mvn/version "0.2.11"}
   same/ish                       {:mvn/version "0.1.4"}
-  scad-clj/scad-clj              {:local/root  "../scad-clj"} #_{:mvn/version "0.5.3"}
+  svg-clj/svg-clj                {:local/root  "/Users/adam/dev/svg-clj"} #_{:mvn/version "0.5.3"}
   #_occjava #_{:local/root  "./resources/occjava.jar"}}
 
  :paths ["src" "resources"]

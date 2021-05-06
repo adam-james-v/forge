@@ -1,20 +1,12 @@
-(ns scad-clj.model2
+(ns forge.model
   (:require [clojure.walk :refer [postwalk]]))
 
 (def pi Math/PI)
 (def tau (* 2 pi))
 
-(defn rad->deg
-  [rad]
-  (/ (* rad 180) pi))
-
-(defn deg->rad
-  [deg]
-  (* (/ deg 180) pi))
-
-(defn square
+(defn rect
   [x y]
-  [:square {:x x :y y}])
+  [:rect {:x x :y y}])
 
 (defn circle
   [r]
@@ -26,17 +18,17 @@
   ([pts paths]
    [:polygon {:pts pts :paths paths}]))
 
-(defn projection
+(defn project
   [cut & block]
-  [:projection {:cut cut} block])
+  [:project {:cut cut} block])
 
 (defn sphere
   [r]
   [:sphere {:r r}])
 
-(defn cube
+(defn box
   [x y z]
-  [:cube {:x x :y y :z z}])
+  [:box {:x x :y y :z z}])
 
 (defn cylinder
   ([r h]
@@ -48,14 +40,14 @@
   [pts faces]
   [:polyhedron {:pts pts :faces faces}])
 
-(defn extrude-linear
+(defn extrude
   [{:keys [height twist convexity center slices scale] :as opts} & block]
-  [:extrude-linear opts block])
+  [:extrude opts block])
 
-(defn extrude-rotate
+(defn revolve
   [{:keys [convexity angle] :as opts} & block]
-  [:extrude-rotate {:convexity convexity
-                    :angle angle} block])
+  [:revolve {:convexity convexity
+             :angle angle} block])
 
 (defn group
   [& block]
