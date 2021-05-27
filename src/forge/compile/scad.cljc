@@ -1,8 +1,7 @@
 (ns forge.compile.scad
   (:require [clojure.java.shell :refer [sh]]
             [clojure.string :as str]
-            [forge.proto :as f :refer [to-rad
-                                       to-deg]]))
+            [forge.utils :as utils]))
 
 ;; multimethod
 (defmulti write-expr
@@ -95,180 +94,148 @@
     ~@(if (nil? convexity) [] [", convexity=" convexity])
     ");\n"))
 
-
 (defmethod write-expr :extrude
-  [depth [_ {:keys [height twist convexity center slices scale]} block]]
+  [depth [_ {:keys [h]} elem]]
   (concat
-   (list (indent depth) "linear_extrude (height=" height)
-   (if (nil? twist) [] (list ", twist=" (to-deg twist)))
-   (if (nil? convexity) [] (list ", convexity=" convexity))
-   (if (nil? slices) [] (list ", slices=" slices))
-   (cond
-     (nil? scale) []
-     (sequential? scale) (list ", scale=[" (first scale) ", " (second scale) "]")
-     :else (list ", scale=" scale))
-   (when center (list ", center=true"))
-   (list "){\n")
-
-   (mapcat #(write-expr (inc depth) %1) block)
-   (list (indent depth) "}\n")))
+   (list (indent depth) 
+         "linear_extrude(height=" h
+         "){\n")
+   (write-expr (inc depth) elem)
+   (list (indent depth) 
+         "}\n")))
 
 (defmethod write-expr :revolve
-  [depth [_ {:keys [convexity fn angle]} block]]
+  [depth [_ {:keys [a]} elem]]
   (concat
-   (list (indent depth) "rotate_extrude (")
-   (str/join ", "
-     (concat
-       (if convexity [(str "convexity=" convexity)])
-       (if angle [(str "angle=" angle)])
-       (if fn [(str "$fn=" fn)])))
-   (list ") {\n")
-   (mapcat #(write-expr (inc depth) %1) block)
-   (list (indent depth) "}\n")))
-
-(defmethod write-expr :surface
-  [depth [_ {:keys [filepath convexity center invert]}]]
-  (concat
-   (list (indent depth) "surface (file = \"" filepath "\""
-         (when convexity (format ", convexity=%d" convexity))
-         (when center ", center=true")
-         (when invert ", invert=true")
-         ");\n")))
-
-(defmethod write-expr :resize
-  [depth [_ {:keys [x y z auto]} block]]
-  (concat
-   (list (indent depth) "resize ([" x ", " y ", " z "]")
-   (list (when-not (nil? auto)
-           (str " auto="
-                (if (coll? auto)
-                  (str "[" (str/join ", " (map true? auto)) "]")
-                  (true? auto)))))
-   "){\n"
-   (mapcat #(write-expr (inc depth) %1) block)
-   (list (indent depth) "}\n")))
+   (list (indent depth)
+         "rotate_extrude(angle=" a
+         "){\n")
+   (write-expr (inc depth) elem)
+   (list (indent depth) 
+         "}\n")))
 
 (defmethod write-expr :translate
-  [depth [_ {:keys [x y z]} block]]
+  [depth [_ {:keys [x y z]} elem]]
   (concat
    (list (indent depth) "translate ([" x ", " y ", " z "]) {\n")
-   (write-expr (inc depth) block)
+   (write-expr (inc depth) elem)
    (list (indent depth) "}\n")))
 
 (defmethod write-expr :rotate
-  [depth [_ {:keys [a x y z]} block]]
+  [depth [_ {:keys [a x y z]} elem]]
   (if a
     (concat
      (list (indent depth) "rotate (a=" a ", v=[" x ", " y ", " z "]) {\n")
-     (write-expr (inc depth) block)
+     (write-expr (inc depth) elem)
      (list (indent depth) "}\n"))
     (concat
      (list (indent depth) "rotate ([" x "," y "," z "]) {\n")
-     (write-expr (inc depth) block)
+     (write-expr (inc depth) elem)
      (list (indent depth) "}\n"))))
 
 (defmethod write-expr :scale
-  [depth [_ {:keys [x y z]} block]]
+  [depth [_ {:keys [x y z]} elem]]
   (concat
    (list (indent depth) "scale ([" x ", " y ", " z "]) {\n")
-   (write-expr (inc depth) block)
+   (write-expr (inc depth) elem)
    (list (indent depth) "}\n")))
 
 (defmethod write-expr :mirror
-  [depth [_ {:keys [x y z]} block]]
+  [depth [_ {:keys [x y z]} elem]]
   (concat
    (list (indent depth) "mirror ([" x ", " y ", " z "]) {\n")
-   (write-expr (inc depth) block)
+   (write-expr (inc depth) elem)
    (list (indent depth) "}\n")))
 
 (defmethod write-expr :hull
-  [depth [_ _ block]]
+  [depth [_ _ elem]]
   (concat
    (list (indent depth) "hull () {\n")
-   (write-expr (inc depth) block)
+   (write-expr (inc depth) elem)
    (list (indent depth) "}\n")))
 
 (defmethod write-expr :offset
-  [depth [_ {:keys [r delta chamfer] :or {chamfer false}} block]]
-  (concat
-   (list (indent depth) "offset (")
-   (if r
-     (list "r = " r)
-     (list "delta = " delta))
-   (when chamfer (list ", chamfer=true"))
-   (list ") {\n")
-   (write-expr (inc depth) block)
-   (list (indent depth) "}\n")))
+  [depth [_ {:keys [d]} elem]]
+  (list (indent depth) 
+        "offset (r = " d
+        "){\n"
+        (write-expr (inc depth) elem)
+        (indent depth) 
+        "}\n"))
 
 (defmethod write-expr :minkowski
-  [depth [_ _ block]]
+  [depth [_ _ elems]]
   (concat
    (list (indent depth) "minkowski () {\n")
-   (write-expr (inc depth) block)
+   (write-expr (inc depth) elems)
    (list (indent depth) "}\n")))
 
 (defmethod write-expr :multmatrix
-  [depth [_ {:keys [mtx]} block]]
+  [depth [_ {:keys [mtx]} elem]]
   (let [w (fn [s] (str "[" s "]"))
         co (fn [c] (apply str (interpose "," c)))]
     (concat
      (list (indent depth) "multmatrix(")
      (w (co (map #(w (co %)) mtx)))
      (list ") {\n")
-     (mapcat #(write-expr (inc depth) %1) block)
+     (mapcat #(write-expr (inc depth) %1) elem)
      (list (indent depth) "}\n"))))
 
 (defmethod write-expr :union
-  [depth [_ _ block]]
+  [depth [_ _ elems]]
   (concat
    (list (indent depth) "union () {\n")
-   (write-block depth block)
+   (write-block depth elems)
    (list (indent depth) "}\n")))
 
 (defmethod write-expr :difference
-  [depth [_ _ block]]
+  [depth [_ _ elems]]
   (concat
    (list (indent depth) "difference () {\n")
-   (mapcat #(write-expr (inc depth) %1) block)
+   (mapcat #(write-expr (inc depth) %1) elems)
    (list (indent depth) "}\n")))
 
 (defmethod write-expr :intersection
-  [depth [_ _ block]]
+  [depth [_ _ elems]]
   (concat
    (list (indent depth) "intersection () {\n")
-   (mapcat #(write-expr (inc depth) %1) block)
+   (mapcat #(write-expr (inc depth) %1) elems)
    (list (indent depth) "}\n")))
 
 (defmethod write-expr :color
-  [depth [_ [r g b a] block]]
+  [depth [_ [r g b a] elem]]
   (concat
     (list (indent depth) "color ([" r ", " g ", " b ", " a"]) {\n")
-    (write-block depth block)
+    (write-block depth elem)
     (list (indent depth) "}\n")))
 
 (defmethod write-expr :group 
-  [depth [_ _ block]]
+  [depth [_ _ elem]]
   (concat
    (list (indent depth) "group() {\n")
-   (mapcat #(write-expr (inc depth) %1) block)
+   (mapcat #(write-expr (inc depth) %1) elem)
    (list (indent depth) "}\n")))
 
-(defn write-scad [& block]
+(defn write [& block]
   (str/join (write-expr 0 block)))
 
-(defn png!
-  [fname mdl-data]
-  (let [scad (write-scad [#_(fn! 20) mdl-data])]
-    (sh "openscad" "/dev/stdin"
-        "--imgsize" "400,400"
-        "--projection" "orthogonal"
-        "--colorscheme" #_"greenscreen" "Nord"
-        #_"--camera" #_"0,0,0,55,0,25,2900"
-        "-o" fname
-        :in scad)))
+#?(:clj
+   (defn png!
+     [fname mdl-data]
+     (let [scad (write-scad [#_(fn! 20) mdl-data])]
+       (sh "openscad" "/dev/stdin"
+           "--imgsize" "400,400"
+           "--projection" "orthogonal"
+           "--colorscheme" #_"greenscreen" "Nord"
+           #_"--camera" #_"0,0,0,55,0,25,2900"
+           "-o" fname
+           :in scad)))
+)
 
-(defn cider-show
-  [mdl-data]
-  (let [fname "_imgtmp.png"]
-    (do (png! fname mdl-data)
-        (clojure.java.io/file fname))))
+#?(:clj   
+   (defn cider-show
+     [mdl-data]
+     (let [fname "_imgtmp.png"]
+       (do (png! fname mdl-data)
+           (clojure.java.io/file fname))))
+)

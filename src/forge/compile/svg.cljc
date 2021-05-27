@@ -6,8 +6,7 @@
             [svg-clj.transforms :as tf]
             [svg-clj.tools :as tools]
             [hiccup.core :refer [html]]
-            [forge.proto :as f :refer [to-rad
-                                       to-deg]]))
+            [forge.utils :as utils]))
 
 ;; multimethod
 (defmulti elem-to-svg
@@ -27,10 +26,10 @@
   [[_ {:keys [r center origin rotation translation]}] xf]
   (let [rot (if rotation rotation [0 0 0])
         tr (if translation translation [0 0 0])
-        pts (->> (f/regular-polygon-pts r 40)
+        pts (->> (utils/regular-polygon-pts r 40)
                  (mapv #(conj % 0))
-                 (mapv #(f/v+ origin %))
-                 (mapv #(f/rotate-point % rot))
+                 (mapv #(utils/v+ origin %))
+                 (mapv #(utils/rotate-point % rot))
                  xf)]
     (-> (path/polygon-path pts)
         (tf/style {:fill "none"
@@ -45,8 +44,8 @@
                     [(/ x 2.0) (/ y 2.0)]
                     [(/ x -2.0) (/ y 2.0)] ]
                    [ [0 0] [x 0] [x y] [0 y] ])
-                 (mapv #(f/v+ origin %))
-                 (mapv #(f/rotate-point % rotation))
+                 (mapv #(utils/v+ origin %))
+                 (mapv #(utils/rotate-point % rotation))
                  xf)]
     (-> (path/polygon-path pts)
         (tf/style {:fill "none"
@@ -77,7 +76,7 @@
 
 (defn rotate-points
   [[ax ay az] pts]
-  (mapv #(f/rotate-point % [ax ay az]) pts))
+  (mapv #(utils/rotate-point % [ax ay az]) pts))
 
 (defn isometric-xf
   [pts]
@@ -97,7 +96,7 @@
   (-> pts
       (rotate-points [90 0 0])))
 
-(defn write-svg
+(defn write
   [& mdl-data]
   (->> mdl-data
        (mapv #(elem-to-svg % isometric-xf))
