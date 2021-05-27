@@ -17,9 +17,10 @@
   org.clojure/test.check         {:mvn/version "0.9.0"}
   org.clojure/math.numeric-tower {:mvn/version "0.0.4"}
   org.clojure/core.logic         {:mvn/version "0.8.11"}
+  hiccup/hiccup                  {:mvn/version "2.0.0-alpha2"}
   hawk/hawk                      {:mvn/version "0.2.11"}
   same/ish                       {:mvn/version "0.1.4"}
-  svg-clj/svg-clj                {:local/root  "/Users/adam/dev/svg-clj"} #_{:mvn/version "0.5.3"}
+  svg-clj/svg-clj                {:local/root "/Users/adam/dev/svg-clj"}
   #_occjava #_{:local/root  "./resources/occjava.jar"}}
 
  :paths ["src" "resources"]
@@ -41,31 +42,8 @@ Currently presented here without a license as things are still highly experiment
 
 #+END_SRC
 
-* next-up
-** angle-from-pts (handle > 180 cases)
-** spec for polygons, lines, pts
-** unit tests for polygon-union
-** fix on-line? to handle 2d without issues
-** proper project management approach for Forge lib work
-I need to manage this project more professionally.
-
-First idea is to learn 
- org-agenda   <--+-- start here because I think it'll be the most fun!
-                 |
- org-roam     <--+
-
-see if those tools can help me manage this more thoroughly.
-
-Could also use github more effectively to basic PM
-
-Maybe trello?
-
-** change how :history is tracked in shape maps
-History right now grows very rapidly because all args are passed in as values and every step is appended to the history list. So, the most current step contains all previous steps as values in the tree already.
-
-I think instead I can just overwrite the history key with the current function and its args as values. This should properly capture the whole code tree essentially as the user programmed it.
 * design
-** Introduction
+** intro
 *** Pitch
 Forge is a powerful Design library that enhances the work of designers and engineers by providing a concise, powerful set of design documentation and creation tools.
 
@@ -136,7 +114,7 @@ This is excellent for design work which can be completed by an individual. Itera
 The 'change arrow' always occurs one way. txt -> html -> CAD
 This mono-directional change seems like a hinderance, but forces the user(s) to capture design intent at the lowest level, always ensuring correctness downstream.
 
-** Architecture
+** architecture
 The Forge library is architected around an idea of *functional layering.* Layering begins with a *kernel* of necessary functionality and wraps on additional functionality. Each added layer depends upon prior layers, but adds value to the unit as a whole. This implies that:
  - a *kernel* is the minimum set of functionality that can provide value
  - any layer on its own provides no utility, due to its dependence on prior layers
@@ -284,7 +262,7 @@ To keep it all straight.
  integration
 
 #+end_src
-** 2021-initial-notes
+** notes
 I need to productize fairly quickly.
 
 Necessary features for acceptable 'paid prototyping':
@@ -312,779 +290,9 @@ Long term, I want to build my own CAD Kernel, native in Clojure so that CLJ/CLJS
 #+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
 (ns forge.proto
   (:require [forge.delaunay :as delaunay]
-            [same :refer [ish? zeroish?]]
-            [scad-clj.model :as scad]
-            [scad-clj.scad :refer [write-scad]]
-            [scad-clj.csg :refer [write-csg]]))
-
-;; hello 
+            [same :refer [ish? zeroish?]]))
 
 #+END_SRC
-
-* forge-model
-** notes
-This is a section that I think should move to the forge library. It's here only for prototyping at the moment.
-
-The model will be consistent such that any operation done on it will produce a model as output. This lets you chain any set of operations together to produce a model. You can then also create renderers as separate applications.
-
-Any object consists of:
-
-- sdf      (FREP fn)        1 or more
-- vertices (3-tuples)       1 or more
-- curves   (parametric fns) 0 or more
-- surfaces (parametric fns) 0 or more
-- history  (sequence of operation fns/args) 1 or more
-
-primitives (fns that generate the initial structure):
-
-- vertex
-- line
-- polyline
-- curve
-
-- circle
-- rectangle
-- polygon
-
-- extrude
-- revolve
-
-- sphere
-- box
-- cylinder
-- polyhedron
-- surface
-
-Necessary operations:
-
-- translate
-- rotate
-- scale
-
-- union
-- difference
-- intersection
-
-Thoughts related to 'sketches'
-
-- might be useful as a grouping mechanism for all 2D things.
-- could just have all 2D related operations implicitly work on XY plane... and you can use all 3D operations normally
-- you can def a list of 2D things and just reduce them with union to create an object that you can then extrude, revolve, display, whatever. So, for now, there is not explicit structure for sketches. They are just user convention at most.
-
-** model-map
-Not sure how best to handle reference elements like center points, midlines, control points, etc.
-
-Perhaps they shouldn't be my first concern at all, but I feel like they are going to be necessary for visual clarity, debugging, and control in UI environments.
-
-It might be better to 'tag' elements as :ref and just place them appropriately. Eg. a Centerpoint is just a tagged version of a vertex and so ends up in the vertices list.
-
-#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
-(def sample-model
-  {:history "the quoted most recent fn call with eval'd args."
-   :frep "the single FREP function which produces the shape"
-   :ref "list of reference elements like center points and lines"
-   :vertices "list of vertices, excluding ref elements"
-   :curves "list of parametric curve functions"
-   :surfaces "list of parametric surface functions"
-   :volumes "list of volume functions"})
-
-#+END_SRC
-
-** operations
-*** unions
-**** frep
-#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
-(defn frep-union [f g]
-  (fn [pt]
-    (let [a (f pt)
-          b (g pt)]
-      (min a b))))
-
-#+END_SRC
-
-**** naive-brep
-#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
-(defn brep-curve-union
-  [& curves]
-  (let [n (count curves)
-        intervals (map #(vector % (inc %)) (range n))]
-    (fn [t]
-      (let [t (* n t)]
-        (cond
-          (= (float t) 0.0) ((first curves) 0)
-          (= (float t) (float n)) ((last curves) 1)
-          :else
-          (first
-           (filter 
-            some?
-            (map #(remap-within %1 %2 t) curves intervals))))))))
-
-(defn brep-surface-union
-  [& surfaces]
-  (let [n (count surfaces)
-        intervals (map #(vector % (inc %)) (range n))]
-    (fn [u v]
-      (let [partial-surfaces (map #(partial % u) surfaces)]
-        ((apply brep-curve-union partial-surfaces) v)))))
-
-(defn union
-  [shape1 shape2]
-  (let [s1 (dissoc shape1 :frep :history)
-        s2 (dissoc shape2 :frep :history)]
-    (merge
-     (merge-with (comp vec concat) s1 s2)
-     {:frep (frep-union (:frep shape1) (:frep shape2))
-      :history [`(union ~shape1 ~shape2)]})))
-
-#+END_SRC
-
-**** brep
-Let's consider first a union of 2 polygons known to be on the same plane (assume in XY plane). We need to:
-
-- find all intersection points between the polygons
-- remove all points from p1 that are inside p2
-- remove all points from p2 that are inside (original p1)
-- remaining points are concatenated, but order must be preserved around the new shape
-
-
-#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
-
-
-#+END_SRC
-
-*** difference
-#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
-(defn frep-difference [f g]
-  (fn [pt]
-    (let [a (f pt)
-          b (* -1 (g pt))]
-      (max a b))))
-
-#+END_SRC
-
-*** intersection
-#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
-(defn frep-intersection [f g]
-  (fn [pt]
-    (let [a (f pt)
-          b (g pt)]
-      (max a b))))
-
-#+END_SRC
-
-*** transformations
-**** translate
-#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
-(defn frep-translate
-  [f pos]
-  (fn [pt]
-    (f (v+ pt pos))))
-
-(defn brep-translate
-  [f pos]
-  (comp #(v+ pos %) f))
-
-(defn translate
-  [shape pos]
-  (merge
-   shape
-   {:history (conj (:history shape) `(translate ~shape ~pos))
-    :frep (frep-translate (:frep shape) pos)
-    :vertices (mapv (partial v+ pos) (:vertices shape))
-    :curves (mapv #(brep-translate % pos) (:curves shape))
-    :surfaces (mapv #(brep-translate % pos) (:surfaces shape))
-    :volumes (mapv #(brep-translate % pos) (:volumes shape))}))
-
-#+END_SRC
-
-**** rotate
-#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
-(defn sin-cos-pair [theta]
-  [(Math/sin (to-rad theta)) (Math/cos (to-rad theta))])
-
-(defn rot-pt-2d
-  [[x y] theta]
-  (let [[s-t c-t] (sin-cos-pair theta)]
-    [(- (* x c-t) (* y s-t))
-     (+ (* y c-t) (* x s-t))]))
-
-;; this rotates a point around [0,0,0]
-(defn rot-pt
-  [[x y z] axis theta]
-  (cond
-    (= axis :x) (into [x] (rot-pt-2d [y z] theta))
-    (= axis :y) (apply #(into [] [%2 y %1]) (rot-pt-2d [z x] theta))
-    (= axis :z) (into (rot-pt-2d [x y] theta) [z])))
-
-(defn rotate-point
-  [pt [ax ay az]]
-  (-> pt
-      (rot-pt :z az)
-      (rot-pt :y ay)
-      (rot-pt :x ax)))
-
-(defn brep-rotate
-  [f angles]
-  (comp #(rotate-point % angles) f))
-
-(defn frep-rotate
-  [f angles]
-  (fn [pt]
-    (f (rotate-point pt angles))))
-
-(defn rotate
-  [shape angles]
-  (merge
-   shape
-   {:history (conj (:history shape) `(rotate ~shape ~angles))
-    :frep (frep-rotate (:frep shape) angles)
-    :vertices (mapv #(rotate-point % angles) (:vertices shape))
-    :curves (mapv #(brep-rotate % angles) (:curves shape))
-    :surfaces (mapv #(brep-rotate % angles) (:surfaces shape))
-    :volumes (mapv #(brep-rotate % angles) (:volumes shape))}))
-
-#+END_SRC
-
-**** scale
-#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
-(defn frep-scale
-  [f scales]
-  (fn [pt]
-    (f (v* pt scales))))
-
-(defn brep-scale
-  [f scales]
-  (comp #(v* scales %) f))
-
-(defn scale
-  [shape scales]
-  (merge
-   shape
-   {:history (conj (:history shape) `(scale ~shape ~scales))
-    :frep (frep-scale (:frep shape) scales)
-    :vertices (mapv (partial v* scales) (:vertices shape))
-    :curves (mapv #(brep-scale % scales) (:curves shape))
-    :surfaces (mapv #(brep-scale % scales) (:surfaces shape))
-    :volumes (mapv #(brep-scale % scales) (:volumes shape))}))
-
-#+END_SRC
-
-*** extrude
-#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
-(defn frep-extrude
-  [f h]
-  (fn [pt]
-    (let [d (f (drop-last pt))
-          w [d (- (Math/abs (last pt)) h)]]
-      (+ (min (apply max w) 0)
-         (distance [0 0]
-                   [(max (first w) 0) (max (second w) 0)])))))
-
-(declare brep-line)
-(defn brep-curve-extrude
-  [c h]
-  (fn [u v]
-    (let [c2 (brep-line (c u) (v+ (c u) [0 0 h]))]
-      (c2 v))))
-
-(defn brep-surface-extrude
-  [s h]
-  (fn [u v w]
-    (let [c1 (brep-line (s u v) (v+ (s u v) [0 0 h]))]
-      c1 v)))
-
-(defn extrude
-  [shape h]
-  (let [vertices (mapv (partial v+ [0 0 h]) (:vertices shape))]
-    (merge
-     (merge-with
-      (comp vec concat)
-      shape
-      {:vertices vertices
-       :curves (concat
-                (mapv #(brep-translate % [0 0 h]) (:curves shape))
-                (mapv #(brep-line %1 %2) (:vertices shape) vertices))
-       :surfaces (concat
-                  [(brep-translate (first (:surfaces shape)) [0 0 h])]
-                  (mapv #(brep-curve-extrude % h) (:curves shape)))
-       :volumes [(brep-surface-extrude (first (:surfaces shape)) h)]})
-     {:history `(extrude ~shape ~h)
-      :frep (frep-extrude (:frep shape) h)})))
-
-#+END_SRC
-
-*** sweep
-#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
-(defn brep-curve-straight-sweep
-  [c1 c2]
-  (fn [u v]
-    (v+ (c1 u) (c2 v))))
-
-(defn brep-surface-straight-sweep
-  [s c]
-  (fn [u v w]
-    (v+ (s u v) (c w))))
-
-#+END_SRC
-
-*** revolve
-#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
-(defn frep-revolve
-  [f r]
-  (fn [pt]
-    (let [q [(- (distance [0 0] [(first pt) (last pt)]) r) 
-             (second pt)]]
-      (f q))))
-
-#+END_SRC
-
-** primitives
-*** vertex
-#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
-(defn vertex
-  [[x y z]]
-  {:history `(vertex [~x ~y ~z])
-   :frep (fn [pt]
-           (distance [x y z] pt))
-   :vertices [[x y z]]})
-
-#+END_SRC
-
-*** line
-#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
-(defn frep-line
-  [a b]
-  (fn [pt]
-    (let [pa (map - pt a)
-          ba (map - b a)
-          h (clamp (/ (dot* pa ba) (dot* ba ba)) 0 1)]
-      (distance (map - pa (map * ba (repeat h))) [0 0 0]))))
-
-(defn brep-line
-  [a b]
-  (fn [t]
-    (cond
-      (= t :tag) :line
-      (= (float t) 0.0) a
-      (= (float t) 1.0) b
-      :else
-      (v+ a (v* (v- b a) (repeat t))))))
-
-(defn line
-  [a b]
-  {:history `(line ~a ~b)
-   :frep (frep-line a b)
-   :vertices [a b]
-   :curves [(brep-line a b)]})
-
-(defn brep-polyline
-  [pts]
-  (let [step (/ 1.0 (dec (count pts)))
-        intervals (partition 2 1 (range 0 (+ 1 step) step))
-        lines (map (partial apply brep-line) (partition 2 1 pts))]
-    (fn [t]
-      (cond 
-        (= t :tag) :polyline
-        (= (float t) 0.0) (first pts)
-        (= (float t) 1.0) (last pts)
-        :else
-        (first (filter some?
-                       (map #(remap-within %1 %2 t) lines intervals)))))))
-
-#+END_SRC
-
-*** circle
-#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
-(defn frep-circle
-  [r]
-  (fn [pt]
-    (- (distance pt [0 0 0]) r)))
-
-;;https://mathforum.org/library/drmath/view/63755.html
-(defn brep-curve-circle
-  [a b c]
-  (let [n (normalize (normal a b c))
-        r (radius-from-pts a b c)
-        cp (center-from-pts a b c)
-        u (normalize (mapv - a cp))
-        v (cross* n u)]
-    (fn [t]
-      (cond
-        (= t :tag) :circle
-        (or (< t 0.0) (> t 1.0)) nil
-        (= (float t) 0.0) a
-        (= (float t) 1.0) a
-        :else
-        (let [t (* 2 Math/PI t)]
-          (v+ cp
-              (v* (repeat (* r (Math/cos t))) u)
-              (v* (repeat (* r (Math/sin t))) v)))))))
-
-(defn brep-surface-circle
-  [a b c]
-  (let [cp (center-from-pts a b c)
-        c1 (brep-curve-circle a b c)]
-    (fn [u v]
-      (let [c2 (brep-line cp (c1 u))]
-        (c2 v)))))
-
-(defn circle
-  [r]
-  {:history `(circle ~r)
-   :frep (frep-circle r)
-   :vertices [#_[0 0 0] [r 0 0] [0 r 0] [(- r) 0 0] [0 (- r) 0]]
-   :curves [(brep-curve-circle [r 0 0] [0 r 0] [(- r) 0 0])]
-   :surfaces [(brep-surface-circle [r 0 0] [0 r 0] [(- r) 0 0])]})
-
-#+END_SRC
-
-*** ellipse
-#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
-(defn brep-curve-ellipse
-  [rx ry]
-  (fn [t]
-    (let [t (* 2 Math/PI t)
-          x (* rx (Math/cos t))
-          y (* ry (Math/sin t))]
-      [x y])))
-
-#+END_SRC
-
-*** arc
-#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
-(defn old-arc
-  [a b c]
-  (let [cr (brep-curve-circle a b c)
-        c-param (estimate-parameter cr c 0.001)]
-    (fn [t]
-      (cond
-        (or (< t 0.0) (> t 1.0)) nil
-        (= (float t) 0.0) a
-        (= (float t) 1.0) c
-        :else
-        (let [t (* c-param t)]
-          (cr t))))))
-#+END_SRC
-
-There are 2 angle-from-pts functions. They don't both work here, even though I think they should... angle-from-pts2 causes this function to nil out in many cases.
-
-angle-from-pts only reports the small angle no matter what, so that isn't always going to produce the correct arc.
-
-#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
-(defn brep-curve-arc
-  [a b c]
-  (let [f (brep-curve-circle a b c)
-        cp (center-from-pts a b c)
-        angle (angle-from-pts a cp c)]
-    (fn [t]
-      (let [t (* t (/ angle 360.0))]
-        (f t)))))
-
-;; this is not correct. ...-straight-sweep does
-;; not account for rotating based on path normal
-(defn brep-surface-arc
-  [a b c]
-  (let [cp (center-from-pts a b c)
-        c1 (brep-line cp a)
-        c2 (brep-curve-arc a b c)]
-    (fn [u v]
-      ((brep-curve-straight-sweep c1 c2) u v))))
-
-#+END_SRC
-
-*** fillets
-Fillets are applied to a shape at intersections of curves. So, for a polygon, all corner points can be filletted.
-
-A fillet for BREP is best represented with a brep-curve-arc.
-A fillet for FREP is best done with transformation using scaling + constant offset to produce a rounded shell that maintains original dimension of the boundary while adding the rounded corners. (see [[https://www.iquilezles.org/www/articles/distfunctions2d/distfunctions2d.htm]] )
-
-#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
-#+END_SRC
-
-*** triangle
-[[https://www.iquilezles.org/www/articles/distfunctions2d/distfunctions2d.htm]]
-
-#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
-(defn frep-triangle
-  [a b c]
-  (fn [pt]
-    (let [[e0 e1 e2] (map #(apply v- %) [[b a] [c b] [a c]])
-          [v0 v1 v2] (map (partial v- pt) [a b c])
-          xf (fn [v e] 
-               (v- v (map * e (repeat (clamp (/ (dot* v e) (dot* e e)) 0 1)))))
-          [pq0 pq1 pq2] (map #(apply xf %) [[v0 e0] [v1 e1] [v2 e2]])
-          s (sign (- (* (first e0) (second e2)) (* (second e0) (first e2))))
-          d1 (min (dot* pq0 pq0)
-                  (dot* pq1 pq1)
-                  (dot* pq2 pq2))
-          d2 (min (* s (- (* (first v0) (second e0)) (* (second v0) (first e0))))
-                  (* s (- (* (first v1) (second e1)) (* (second v1) (first e1))))
-                  (* s (- (* (first v2) (second e2)) (* (second v2) (first e2)))))]
-      (* -1 (Math/sqrt d1) (sign d2)))))
-
-(defn brep-surface-triangle
-  [a b c]
-  (let [l1 (brep-line b a)
-        l2 (brep-line c a)]
-    (fn [u v]
-      (let [l3 (brep-line (l1 v) (l2 v))]
-        (l3 u)))))
-
-(declare brep-curve-polygon)
-
-(defn triangle
-  [a b c]
-  {:history `(triangle ~a ~b ~c)
-   :frep (frep-triangle a b c)
-   :vertices [a b c]
-   :curves (conj
-            (mapv brep-line [a b c] [b c a])
-            (brep-curve-polygon [a b c]))
-   :surfaces [(brep-surface-triangle a b c)]})
-
-#+END_SRC
-
-*** polygon
-#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
-(defn regular-polygon-pts
-  [r n]
-  (let [angle (* 2 Math/PI (/ 1 n))]
-    (for [step (range n)]
-      [(* r (Math/cos (* step angle)))
-       (* r (Math/sin (* step angle)))
-       0])))
-
-#+END_SRC
-
-My frep-polygon uses a triangulation/union approach. This did break for me in some cases, so I am going to test an alternate implementation. I will port this code:
-
-
-https://www.iquilezles.org/www/articles/distfunctions2d/distfunctions2d.htm  (go to polygon - exact section)
-https://www.shadertoy.com/view/wdBXRW
-
-
-Every polygon function must work on & paths, not just a single list of points. This is to allow multi-shape paths (eg. a circle with a hole.)
-
-As well, any polygon union should effectively produce the same polygon that would result from providing each path into one polygon call. That is...
-
-(= (union (polygon pts-a) (polygon pts-b)) (polygon pts-a pts-b))
-
-#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
-(defn frep-polygon
-  [paths]
-  (let [pts (apply concat paths) ;; temporary avoidance of path merge
-        tris (map
-              #(apply frep-triangle %)
-              (clip-ears pts)
-              (:triangles (clip-ears pts)))]
-    (reduce frep-union tris)))
-
-(defn brep-curve-polygon
-  [pts]
-  (brep-polyline (conj (vec pts) (first pts))))
-
-(defn brep-surface-polygon
-  [pts]
-  (let [xf (fn [pts] (mapv #(conj % 0) pts))
-        tris (mapv xf (:triangles (delaunay/triangulate pts)))]
-    (apply brep-surface-union (map #(apply brep-surface-triangle %) tris))))
-
-(defn polygon-old
-  [pts]
-  {:history `(polygon-old ~pts)
-   :frep (frep-polygon pts)
-   :vertices (vec pts)
-   :curves (mapv 
-            #(apply brep-line %) 
-            (partition 2 1 (conj (vec pts) (first pts))))
-   :surfaces [(brep-surface-polygon pts)]})
-
-(defn close-path
-  [path]
-  (conj (vec path) (first path)))
-
-(defn path->brep-lines
-  [path]
-  (mapv #(apply brep-line %) (partition 2 1 path)))
-#+END_SRC
-
-Below is a temporary polygon function that concats paths into a single list of points for the FREP. This won't really work correctly for any holes or overlapping paths. I need to fix this behaviour with an updated frep-polygon function that takes paths as an arguement and correctly combines them.
-
-#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
-(defn polygon
-  [& paths]
-  (let [paths (mapv vec paths)]
-    {:history `(polygon ~@paths)
-     :frep nil #_(frep-polygon paths)
-     :vertices (apply concat paths)
-     :curves (vec (mapcat (comp path->brep-lines close-path) paths))
-     :surfaces (mapv brep-surface-polygon paths)}))
-
-#+END_SRC
-*** sphere
-#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
-(defn frep-sphere [r]
-  (fn [pt]
-    (let [[x y z] pt]
-      (+ (sq x) (sq y) (sq z) (- (sq r))))))
-
-(defn brep-sphere
-  [r]
-  (fn [u v]
-    (let [[u v] (map #(* 2 Math/PI %) [u v])
-          x (* r (Math/sin u) (Math/cos v))
-          y (* r (Math/sin u) (Math/sin v))
-          z (* r (Math/cos u))]
-      [x y z])))
-
-#+END_SRC
-
-*** torus
-#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
-(defn brep-surface-torus
-  [R r]
-  (fn [u v]
-    (let [[u v] (map #(* 2 Math/PI %) [u v])
-          x (* (+ R (* r (Math/cos u))) (Math/cos v))
-          y (* (+ R (* r (Math/cos u))) (Math/sin v))
-          z (* r (Math/sin u))]
-      [x y z])))
-
-#+END_SRC
-
-*** cylinder
-#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
-(defn frep-cylinder [r h]
-  (fn [pt]
-    (let [[x y z] pt]
-      (max (- (Math/sqrt (+ (sq x) (sq y))) r)
-           (- z h) (- (- h) z)))))
-
-(defn brep-surface-cylinder
-  [r h]
-  (fn [u v]
-    (let [u (* 2 Math/PI u)
-          v (* h v)
-          x (* r (Math/cos u))
-          y (* r (Math/sin u))
-          z v]
-      [x y z])))
-
-#+END_SRC
-
-*** box
-#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
-(defn frep-box [l w h]
-  (fn [pt]
-    (let [[x y z] pt]
-      (max (- x l) (- (- l) x)
-           (- y w) (- (- w) y)
-           (- z h) (- (- h) z)))))
-
-#+END_SRC
-* splines-proto
-try again with pomax's tutorials
-#+begin_src clojure
-(defn domain
-  [knots deg]
-  (let [e (- (count knots) 1 deg)]
-    [(nth knots deg) (nth knots e)]))
-
-(defn remap
-  [[s e] t]
-  (+ s (* t (- e s))))
-
-(defn inside?
-  [[a b] x]
-  (and (<= a x)
-       (> b x)))
-
-(defn section
-  [knots deg t]
-  (let [t (remap (domain knots deg) t)
-        spans (partition 2 1 knots)
-        mask (mapv #(inside? % t) spans)]
-    (count (take-while false? mask))))
-
-;; weight and unweight fns
-(defn weight
-  [pt wt]
-  (apply vector (conj (mapv * pt (repeat wt)) wt)))
-
-(defn unweight
-  [pt]
-  (if (> (last pt) 0)
-    (mapv / (drop-last pt) (repeat (last pt)))
-    (drop-last pt)))
-
-;; open uniform clamped knot vector
-(defn knots-ouc
-  [npts deg]
-  (let [s (repeat deg 0)
-        e (repeat deg 1)
-        step (/ 1 (dec (+ npts 1 (- deg))))
-        m (map float (range 0 (+ 1 step) step))]
-    (apply vector (concat s m e))))
-
-(defn deboor
-  [knots cpts deg t]
-  (let [s (section knots deg t)
-        d (atom (mapv #(nth cpts (+ % s (- deg))) (range (inc deg))))
-        nd (last 
-            (for [r (range 1 (inc deg))
-                  j (range deg (dec r) -1)]
-              (let [ka (nth knots (+ j s (- deg)))
-                    kb (nth knots (+ j s 1 (- r)))
-                    nr (- t ka)
-                    dr (- kb ka)
-                    alpha (/ nr dr)
-                    dj (nth @d j)
-                    dj-1 (nth @d (dec j))]
-                (swap! d #(assoc % j (mapv + 
-                                           (map * (repeat alpha) dj)
-                                           (map * (repeat (- 1 alpha)) dj-1)))))))]
-    (nth nd deg)))
-
-(defn -closed-spline
-  [cpts wts deg]
-  (let [tmp (mapv weight cpts wts)
-        wpts (apply vector (concat tmp (take (inc deg) tmp)))
-        knots (knots-ouc (count wpts) deg)]
-    (fn [t]
-      (unweight (deboor knots wpts deg t)))))
-
-(let [tau (* 2 Math/PI)]
-  (def ref-spline-data
-    {:knots (knots-ouc 10 3)
-     :cpts 
-     #_[[10 10] [20 600] [120 600] [150 400] [200 10] [300 700] [400 600] [450 400] [500 200] [650 10]]
-     (mapv #(vector (+ 500 (* 100 (Math/cos %))) 
-                    (+ 500 (* 100 (Math/sin %)))) 
-           (range 0 tau (/ tau 10)))
-     :wts [1 4 1 4 1 4 1 4 1 4]
-     :deg 3}))
-
-(defn -spline
-  [cpts wts deg]
-  (let [knots (knots-ouc (count cpts) deg)
-        wpts (mapv weight cpts wts)]
-    (fn [t]
-      (unweight (deboor knots wpts deg t)))))
-
-(let [tau (* 2 Math/PI)]
-  (def ref-spline-data
-    {:knots (knots-ouc 10 3)
-     :cpts 
-     #_[[10 10] [20 600] [120 600] [150 400] [200 10] [300 700] [400 600] [450 400] [500 200] [650 10]]
-     (mapv #(vector (+ 500 (* 100 (Math/cos %))) 
-                    (+ 500 (* 100 (Math/sin %)))) 
-           (range 0 tau (/ tau 10)))
-     :wts [1 1 1 1 1 1 1 1 1 1]
-     :deg 3}))
-
-(def sp (-closed-spline (:cpts ref-spline-data) (:wts ref-spline-data) (:deg ref-spline-data)))
-
-#+end_src
 
 * math-geom
 Use the util namespace to place functions which may be used across the other namespaces. Currently the util namespace contains mostly geometry calculation functions like checks for lines and points.
@@ -2088,13 +1296,780 @@ My angles-from-pts fn needs to be changed because it will only report the smalle
     (wrap-list-once (map #(apply line-intersection %) edge-pairs))))
 
  #+end_src
+* forge-model
+** notes
+This is a section that I think should move to the forge library. It's here only for prototyping at the moment.
+
+The model will be consistent such that any operation done on it will produce a model as output. This lets you chain any set of operations together to produce a model. You can then also create renderers as separate applications.
+
+Any object consists of:
+
+- sdf      (FREP fn)        1 or more
+- vertices (3-tuples)       1 or more
+- curves   (parametric fns) 0 or more
+- surfaces (parametric fns) 0 or more
+- history  (sequence of operation fns/args) 1 or more
+
+primitives (fns that generate the initial structure):
+
+- vertex
+- line
+- polyline
+- curve
+
+- circle
+- rectangle
+- polygon
+
+- extrude
+- revolve
+
+- sphere
+- box
+- cylinder
+- polyhedron
+- surface
+
+Necessary operations:
+
+- translate
+- rotate
+- scale
+
+- union
+- difference
+- intersection
+
+Thoughts related to 'sketches'
+
+- might be useful as a grouping mechanism for all 2D things.
+- could just have all 2D related operations implicitly work on XY plane... and you can use all 3D operations normally
+- you can def a list of 2D things and just reduce them with union to create an object that you can then extrude, revolve, display, whatever. So, for now, there is not explicit structure for sketches. They are just user convention at most.
+
+** model-map
+Not sure how best to handle reference elements like center points, midlines, control points, etc.
+
+Perhaps they shouldn't be my first concern at all, but I feel like they are going to be necessary for visual clarity, debugging, and control in UI environments.
+
+It might be better to 'tag' elements as :ref and just place them appropriately. Eg. a Centerpoint is just a tagged version of a vertex and so ends up in the vertices list.
+
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(def sample-model
+  {:history "the quoted most recent fn call with eval'd args."
+   :frep "the single FREP function which produces the shape"
+   :ref "list of reference elements like center points and lines"
+   :vertices "list of vertices, excluding ref elements"
+   :curves "list of parametric curve functions"
+   :surfaces "list of parametric surface functions"
+   :volumes "list of volume functions"})
+
+#+END_SRC
+
+** operations
+*** unions
+**** frep
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn frep-union [f g]
+  (fn [pt]
+    (let [a (f pt)
+          b (g pt)]
+      (min a b))))
+
+#+END_SRC
+
+**** naive-brep
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn brep-curve-union
+  [& curves]
+  (let [n (count curves)
+        intervals (map #(vector % (inc %)) (range n))]
+    (fn [t]
+      (let [t (* n t)]
+        (cond
+          (= (float t) 0.0) ((first curves) 0)
+          (= (float t) (float n)) ((last curves) 1)
+          :else
+          (first
+           (filter 
+            some?
+            (map #(remap-within %1 %2 t) curves intervals))))))))
+
+(defn brep-surface-union
+  [& surfaces]
+  (let [n (count surfaces)
+        intervals (map #(vector % (inc %)) (range n))]
+    (fn [u v]
+      (let [partial-surfaces (map #(partial % u) surfaces)]
+        ((apply brep-curve-union partial-surfaces) v)))))
+
+(defn union
+  [shape1 shape2]
+  (let [s1 (dissoc shape1 :frep :history)
+        s2 (dissoc shape2 :frep :history)]
+    (merge
+     (merge-with (comp vec concat) s1 s2)
+     {:frep (frep-union (:frep shape1) (:frep shape2))
+      :history [`(union ~shape1 ~shape2)]})))
+
+#+END_SRC
+
+**** brep
+Let's consider first a union of 2 polygons known to be on the same plane (assume in XY plane). We need to:
+
+- find all intersection points between the polygons
+- remove all points from p1 that are inside p2
+- remove all points from p2 that are inside (original p1)
+- remaining points are concatenated, but order must be preserved around the new shape
+
+
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+
+
+#+END_SRC
+
+*** difference
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn frep-difference [f g]
+  (fn [pt]
+    (let [a (f pt)
+          b (* -1 (g pt))]
+      (max a b))))
+
+#+END_SRC
+
+*** intersection
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn frep-intersection [f g]
+  (fn [pt]
+    (let [a (f pt)
+          b (g pt)]
+      (max a b))))
+
+#+END_SRC
+
+*** transformations
+**** translate
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn frep-translate
+  [f pos]
+  (fn [pt]
+    (f (v+ pt pos))))
+
+(defn brep-translate
+  [f pos]
+  (comp #(v+ pos %) f))
+
+(defn translate
+  [shape pos]
+  (merge
+   shape
+   {:history (conj (:history shape) `(translate ~shape ~pos))
+    :frep (frep-translate (:frep shape) pos)
+    :vertices (mapv (partial v+ pos) (:vertices shape))
+    :curves (mapv #(brep-translate % pos) (:curves shape))
+    :surfaces (mapv #(brep-translate % pos) (:surfaces shape))
+    :volumes (mapv #(brep-translate % pos) (:volumes shape))}))
+
+#+END_SRC
+
+**** rotate
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn sin-cos-pair [theta]
+  [(Math/sin (to-rad theta)) (Math/cos (to-rad theta))])
+
+(defn rot-pt-2d
+  [[x y] theta]
+  (let [[s-t c-t] (sin-cos-pair theta)]
+    [(- (* x c-t) (* y s-t))
+     (+ (* y c-t) (* x s-t))]))
+
+;; this rotates a point around [0,0,0]
+(defn rot-pt
+  [[x y z] axis theta]
+  (cond
+    (= axis :x) (into [x] (rot-pt-2d [y z] theta))
+    (= axis :y) (apply #(into [] [%2 y %1]) (rot-pt-2d [z x] theta))
+    (= axis :z) (into (rot-pt-2d [x y] theta) [z])))
+
+(defn rotate-point
+  [pt [ax ay az]]
+  (let [pt (if (< (count pt) 3)
+             (conj pt 0)
+             pt)]
+    (-> pt
+        (rot-pt :z az)
+        (rot-pt :y ay)
+        (rot-pt :x ax))))
+
+(defn brep-rotate
+  [f angles]
+  (comp #(rotate-point % angles) f))
+
+(defn frep-rotate
+  [f angles]
+  (fn [pt]
+    (f (rotate-point pt angles))))
+
+(defn rotate
+  [shape angles]
+  (merge
+   shape
+   {:history (conj (:history shape) `(rotate ~shape ~angles))
+    :frep (frep-rotate (:frep shape) angles)
+    :vertices (mapv #(rotate-point % angles) (:vertices shape))
+    :curves (mapv #(brep-rotate % angles) (:curves shape))
+    :surfaces (mapv #(brep-rotate % angles) (:surfaces shape))
+    :volumes (mapv #(brep-rotate % angles) (:volumes shape))}))
+
+#+END_SRC
+
+**** scale
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn frep-scale
+  [f scales]
+  (fn [pt]
+    (f (v* pt scales))))
+
+(defn brep-scale
+  [f scales]
+  (comp #(v* scales %) f))
+
+(defn scale
+  [shape scales]
+  (merge
+   shape
+   {:history (conj (:history shape) `(scale ~shape ~scales))
+    :frep (frep-scale (:frep shape) scales)
+    :vertices (mapv (partial v* scales) (:vertices shape))
+    :curves (mapv #(brep-scale % scales) (:curves shape))
+    :surfaces (mapv #(brep-scale % scales) (:surfaces shape))
+    :volumes (mapv #(brep-scale % scales) (:volumes shape))}))
+
+#+END_SRC
+
+*** extrude
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn frep-extrude
+  [f h]
+  (fn [pt]
+    (let [d (f (drop-last pt))
+          w [d (- (Math/abs (last pt)) h)]]
+      (+ (min (apply max w) 0)
+         (distance [0 0]
+                   [(max (first w) 0) (max (second w) 0)])))))
+
+(declare brep-line)
+(defn brep-curve-extrude
+  [c h]
+  (fn [u v]
+    (let [c2 (brep-line (c u) (v+ (c u) [0 0 h]))]
+      (c2 v))))
+
+(defn brep-surface-extrude
+  [s h]
+  (fn [u v w]
+    (let [c1 (brep-line (s u v) (v+ (s u v) [0 0 h]))]
+      c1 v)))
+
+(defn extrude
+  [shape h]
+  (let [vertices (mapv (partial v+ [0 0 h]) (:vertices shape))]
+    (merge
+     (merge-with
+      (comp vec concat)
+      shape
+      {:vertices vertices
+       :curves (concat
+                (mapv #(brep-translate % [0 0 h]) (:curves shape))
+                (mapv #(brep-line %1 %2) (:vertices shape) vertices))
+       :surfaces (concat
+                  [(brep-translate (first (:surfaces shape)) [0 0 h])]
+                  (mapv #(brep-curve-extrude % h) (:curves shape)))
+       :volumes [(brep-surface-extrude (first (:surfaces shape)) h)]})
+     {:history `(extrude ~shape ~h)
+      :frep (frep-extrude (:frep shape) h)})))
+
+#+END_SRC
+
+*** sweep
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn brep-curve-straight-sweep
+  [c1 c2]
+  (fn [u v]
+    (v+ (c1 u) (c2 v))))
+
+(defn brep-surface-straight-sweep
+  [s c]
+  (fn [u v w]
+    (v+ (s u v) (c w))))
+
+#+END_SRC
+
+*** revolve
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn frep-revolve
+  [f r]
+  (fn [pt]
+    (let [q [(- (distance [0 0] [(first pt) (last pt)]) r) 
+             (second pt)]]
+      (f q))))
+
+#+END_SRC
+
+** primitives
+*** vertex
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn vertex
+  [[x y z]]
+  {:history `(vertex [~x ~y ~z])
+   :frep (fn [pt]
+           (distance [x y z] pt))
+   :vertices [[x y z]]})
+
+#+END_SRC
+
+*** line
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn frep-line
+  [a b]
+  (fn [pt]
+    (let [pa (map - pt a)
+          ba (map - b a)
+          h (clamp (/ (dot* pa ba) (dot* ba ba)) 0 1)]
+      (distance (map - pa (map * ba (repeat h))) [0 0 0]))))
+
+(defn brep-line
+  [a b]
+  (fn [t]
+    (cond
+      (= t :tag) :line
+      (= (float t) 0.0) a
+      (= (float t) 1.0) b
+      :else
+      (v+ a (v* (v- b a) (repeat t))))))
+
+(defn line
+  [a b]
+  {:history `(line ~a ~b)
+   :frep (frep-line a b)
+   :vertices [a b]
+   :curves [(brep-line a b)]})
+
+(defn brep-polyline
+  [pts]
+  (let [step (/ 1.0 (dec (count pts)))
+        intervals (partition 2 1 (range 0 (+ 1 step) step))
+        lines (map (partial apply brep-line) (partition 2 1 pts))]
+    (fn [t]
+      (cond 
+        (= t :tag) :polyline
+        (= (float t) 0.0) (first pts)
+        (= (float t) 1.0) (last pts)
+        :else
+        (first (filter some?
+                       (map #(remap-within %1 %2 t) lines intervals)))))))
+
+#+END_SRC
+
+*** circle
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn frep-circle
+  [r]
+  (fn [pt]
+    (- (distance pt [0 0 0]) r)))
+
+;;https://mathforum.org/library/drmath/view/63755.html
+(defn brep-curve-circle
+  [a b c]
+  (let [n (normalize (normal a b c))
+        r (radius-from-pts a b c)
+        cp (center-from-pts a b c)
+        u (normalize (mapv - a cp))
+        v (cross* n u)]
+    (fn [t]
+      (cond
+        (= t :tag) :circle
+        (or (< t 0.0) (> t 1.0)) nil
+        (= (float t) 0.0) a
+        (= (float t) 1.0) a
+        :else
+        (let [t (* 2 Math/PI t)]
+          (v+ cp
+              (v* (repeat (* r (Math/cos t))) u)
+              (v* (repeat (* r (Math/sin t))) v)))))))
+
+(defn brep-surface-circle
+  [a b c]
+  (let [cp (center-from-pts a b c)
+        c1 (brep-curve-circle a b c)]
+    (fn [u v]
+      (let [c2 (brep-line cp (c1 u))]
+        (c2 v)))))
+
+(defn circle
+  [r]
+  {:history `(circle ~r)
+   :frep (frep-circle r)
+   :vertices [#_[0 0 0] [r 0 0] [0 r 0] [(- r) 0 0] [0 (- r) 0]]
+   :curves [(brep-curve-circle [r 0 0] [0 r 0] [(- r) 0 0])]
+   :surfaces [(brep-surface-circle [r 0 0] [0 r 0] [(- r) 0 0])]})
+
+#+END_SRC
+
+*** ellipse
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn brep-curve-ellipse
+  [rx ry]
+  (fn [t]
+    (let [t (* 2 Math/PI t)
+          x (* rx (Math/cos t))
+          y (* ry (Math/sin t))]
+      [x y])))
+
+#+END_SRC
+
+*** arc
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn old-arc
+  [a b c]
+  (let [cr (brep-curve-circle a b c)
+        c-param (estimate-parameter cr c 0.001)]
+    (fn [t]
+      (cond
+        (or (< t 0.0) (> t 1.0)) nil
+        (= (float t) 0.0) a
+        (= (float t) 1.0) c
+        :else
+        (let [t (* c-param t)]
+          (cr t))))))
+#+END_SRC
+
+There are 2 angle-from-pts functions. They don't both work here, even though I think they should... angle-from-pts2 causes this function to nil out in many cases.
+
+angle-from-pts only reports the small angle no matter what, so that isn't always going to produce the correct arc.
+
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn brep-curve-arc
+  [a b c]
+  (let [f (brep-curve-circle a b c)
+        cp (center-from-pts a b c)
+        angle (angle-from-pts a cp c)]
+    (fn [t]
+      (let [t (* t (/ angle 360.0))]
+        (f t)))))
+
+;; this is not correct. ...-straight-sweep does
+;; not account for rotating based on path normal
+(defn brep-surface-arc
+  [a b c]
+  (let [cp (center-from-pts a b c)
+        c1 (brep-line cp a)
+        c2 (brep-curve-arc a b c)]
+    (fn [u v]
+      ((brep-curve-straight-sweep c1 c2) u v))))
+
+#+END_SRC
+
+*** fillets
+Fillets are applied to a shape at intersections of curves. So, for a polygon, all corner points can be filletted.
+
+A fillet for BREP is best represented with a brep-curve-arc.
+A fillet for FREP is best done with transformation using scaling + constant offset to produce a rounded shell that maintains original dimension of the boundary while adding the rounded corners. (see [[https://www.iquilezles.org/www/articles/distfunctions2d/distfunctions2d.htm]] )
+
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+#+END_SRC
+
+*** triangle
+[[https://www.iquilezles.org/www/articles/distfunctions2d/distfunctions2d.htm]]
+
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn frep-triangle
+  [a b c]
+  (fn [pt]
+    (let [[e0 e1 e2] (map #(apply v- %) [[b a] [c b] [a c]])
+          [v0 v1 v2] (map (partial v- pt) [a b c])
+          xf (fn [v e] 
+               (v- v (map * e (repeat (clamp (/ (dot* v e) (dot* e e)) 0 1)))))
+          [pq0 pq1 pq2] (map #(apply xf %) [[v0 e0] [v1 e1] [v2 e2]])
+          s (sign (- (* (first e0) (second e2)) (* (second e0) (first e2))))
+          d1 (min (dot* pq0 pq0)
+                  (dot* pq1 pq1)
+                  (dot* pq2 pq2))
+          d2 (min (* s (- (* (first v0) (second e0)) (* (second v0) (first e0))))
+                  (* s (- (* (first v1) (second e1)) (* (second v1) (first e1))))
+                  (* s (- (* (first v2) (second e2)) (* (second v2) (first e2)))))]
+      (* -1 (Math/sqrt d1) (sign d2)))))
+
+(defn brep-surface-triangle
+  [a b c]
+  (let [l1 (brep-line b a)
+        l2 (brep-line c a)]
+    (fn [u v]
+      (let [l3 (brep-line (l1 v) (l2 v))]
+        (l3 u)))))
+
+(declare brep-curve-polygon)
+
+(defn triangle
+  [a b c]
+  {:history `(triangle ~a ~b ~c)
+   :frep (frep-triangle a b c)
+   :vertices [a b c]
+   :curves (conj
+            (mapv brep-line [a b c] [b c a])
+            (brep-curve-polygon [a b c]))
+   :surfaces [(brep-surface-triangle a b c)]})
+
+#+END_SRC
+
+*** polygon
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn regular-polygon-pts
+  [r n]
+  (let [angle (* 2 Math/PI (/ 1 n))]
+    (for [step (range n)]
+      [(* r (Math/cos (* step angle)))
+       (* r (Math/sin (* step angle)))])))
+
+#+END_SRC
+
+My frep-polygon uses a triangulation/union approach. This did break for me in some cases, so I am going to test an alternate implementation. I will port this code:
+
+
+https://www.iquilezles.org/www/articles/distfunctions2d/distfunctions2d.htm  (go to polygon - exact section)
+https://www.shadertoy.com/view/wdBXRW
+
+
+Every polygon function must work on & paths, not just a single list of points. This is to allow multi-shape paths (eg. a circle with a hole.)
+
+As well, any polygon union should effectively produce the same polygon that would result from providing each path into one polygon call. That is...
+
+(= (union (polygon pts-a) (polygon pts-b)) (polygon pts-a pts-b))
+
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn frep-polygon
+  [paths]
+  (let [pts (apply concat paths) ;; temporary avoidance of path merge
+        tris (map
+              #(apply frep-triangle %)
+              (clip-ears pts)
+              (:triangles (clip-ears pts)))]
+    (reduce frep-union tris)))
+
+(defn brep-curve-polygon
+  [pts]
+  (brep-polyline (conj (vec pts) (first pts))))
+
+(defn brep-surface-polygon
+  [pts]
+  (let [xf (fn [pts] (mapv #(conj % 0) pts))
+        tris (mapv xf (:triangles (delaunay/triangulate pts)))]
+    (apply brep-surface-union (map #(apply brep-surface-triangle %) tris))))
+
+(defn polygon-old
+  [pts]
+  {:history `(polygon-old ~pts)
+   :frep (frep-polygon pts)
+   :vertices (vec pts)
+   :curves (mapv 
+            #(apply brep-line %) 
+            (partition 2 1 (conj (vec pts) (first pts))))
+   :surfaces [(brep-surface-polygon pts)]})
+
+(defn close-path
+  [path]
+  (conj (vec path) (first path)))
+
+(defn path->brep-lines
+  [path]
+  (mapv #(apply brep-line %) (partition 2 1 path)))
+#+END_SRC
+
+Below is a temporary polygon function that concats paths into a single list of points for the FREP. This won't really work correctly for any holes or overlapping paths. I need to fix this behaviour with an updated frep-polygon function that takes paths as an arguement and correctly combines them.
+
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn polygon
+  [& paths]
+  (let [paths (mapv vec paths)]
+    {:history `(polygon ~@paths)
+     :frep nil #_(frep-polygon paths)
+     :vertices (apply concat paths)
+     :curves (vec (mapcat (comp path->brep-lines close-path) paths))
+     :surfaces (mapv brep-surface-polygon paths)}))
+
+#+END_SRC
+*** sphere
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn frep-sphere [r]
+  (fn [pt]
+    (let [[x y z] pt]
+      (+ (sq x) (sq y) (sq z) (- (sq r))))))
+
+(defn brep-sphere
+  [r]
+  (fn [u v]
+    (let [[u v] (map #(* 2 Math/PI %) [u v])
+          x (* r (Math/sin u) (Math/cos v))
+          y (* r (Math/sin u) (Math/sin v))
+          z (* r (Math/cos u))]
+      [x y z])))
+
+#+END_SRC
+
+*** torus
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn brep-surface-torus
+  [R r]
+  (fn [u v]
+    (let [[u v] (map #(* 2 Math/PI %) [u v])
+          x (* (+ R (* r (Math/cos u))) (Math/cos v))
+          y (* (+ R (* r (Math/cos u))) (Math/sin v))
+          z (* r (Math/sin u))]
+      [x y z])))
+
+#+END_SRC
+
+*** cylinder
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn frep-cylinder [r h]
+  (fn [pt]
+    (let [[x y z] pt]
+      (max (- (Math/sqrt (+ (sq x) (sq y))) r)
+           (- z h) (- (- h) z)))))
+
+(defn brep-surface-cylinder
+  [r h]
+  (fn [u v]
+    (let [u (* 2 Math/PI u)
+          v (* h v)
+          x (* r (Math/cos u))
+          y (* r (Math/sin u))
+          z v]
+      [x y z])))
+
+#+END_SRC
+
+*** box
+#+BEGIN_SRC clojure :tangle ./src/forge/proto.cljc
+(defn frep-box [l w h]
+  (fn [pt]
+    (let [[x y z] pt]
+      (max (- x l) (- (- l) x)
+           (- y w) (- (- w) y)
+           (- z h) (- (- h) z)))))
+
+#+END_SRC
+* splines-proto
+try again with pomax's tutorials
+#+begin_src clojure
+(defn domain
+  [knots deg]
+  (let [e (- (count knots) 1 deg)]
+    [(nth knots deg) (nth knots e)]))
+
+(defn remap
+  [[s e] t]
+  (+ s (* t (- e s))))
+
+(defn inside?
+  [[a b] x]
+  (and (<= a x)
+       (> b x)))
+
+(defn section
+  [knots deg t]
+  (let [t (remap (domain knots deg) t)
+        spans (partition 2 1 knots)
+        mask (mapv #(inside? % t) spans)]
+    (count (take-while false? mask))))
+
+;; weight and unweight fns
+(defn weight
+  [pt wt]
+  (apply vector (conj (mapv * pt (repeat wt)) wt)))
+
+(defn unweight
+  [pt]
+  (if (> (last pt) 0)
+    (mapv / (drop-last pt) (repeat (last pt)))
+    (drop-last pt)))
+
+;; open uniform clamped knot vector
+(defn knots-ouc
+  [npts deg]
+  (let [s (repeat deg 0)
+        e (repeat deg 1)
+        step (/ 1 (dec (+ npts 1 (- deg))))
+        m (map float (range 0 (+ 1 step) step))]
+    (apply vector (concat s m e))))
+
+(defn deboor
+  [knots cpts deg t]
+  (let [s (section knots deg t)
+        d (atom (mapv #(nth cpts (+ % s (- deg))) (range (inc deg))))
+        nd (last 
+            (for [r (range 1 (inc deg))
+                  j (range deg (dec r) -1)]
+              (let [ka (nth knots (+ j s (- deg)))
+                    kb (nth knots (+ j s 1 (- r)))
+                    nr (- t ka)
+                    dr (- kb ka)
+                    alpha (/ nr dr)
+                    dj (nth @d j)
+                    dj-1 (nth @d (dec j))]
+                (swap! d #(assoc % j (mapv + 
+                                           (map * (repeat alpha) dj)
+                                           (map * (repeat (- 1 alpha)) dj-1)))))))]
+    (nth nd deg)))
+
+(defn -closed-spline
+  [cpts wts deg]
+  (let [tmp (mapv weight cpts wts)
+        wpts (apply vector (concat tmp (take (inc deg) tmp)))
+        knots (knots-ouc (count wpts) deg)]
+    (fn [t]
+      (unweight (deboor knots wpts deg t)))))
+
+(let [tau (* 2 Math/PI)]
+  (def ref-spline-data
+    {:knots (knots-ouc 10 3)
+     :cpts 
+     #_[[10 10] [20 600] [120 600] [150 400] [200 10] [300 700] [400 600] [450 400] [500 200] [650 10]]
+     (mapv #(vector (+ 500 (* 100 (Math/cos %))) 
+                    (+ 500 (* 100 (Math/sin %)))) 
+           (range 0 tau (/ tau 10)))
+     :wts [1 4 1 4 1 4 1 4 1 4]
+     :deg 3}))
+
+(defn -spline
+  [cpts wts deg]
+  (let [knots (knots-ouc (count cpts) deg)
+        wpts (mapv weight cpts wts)]
+    (fn [t]
+      (unweight (deboor knots wpts deg t)))))
+
+(let [tau (* 2 Math/PI)]
+  (def ref-spline-data
+    {:knots (knots-ouc 10 3)
+     :cpts 
+     #_[[10 10] [20 600] [120 600] [150 400] [200 10] [300 700] [400 600] [450 400] [500 200] [650 10]]
+     (mapv #(vector (+ 500 (* 100 (Math/cos %))) 
+                    (+ 500 (* 100 (Math/sin %)))) 
+           (range 0 tau (/ tau 10)))
+     :wts [1 1 1 1 1 1 1 1 1 1]
+     :deg 3}))
+
+(def sp (-closed-spline (:cpts ref-spline-data) (:wts ref-spline-data) (:deg ref-spline-data)))
+
+#+end_src
 
 * model
 ** ns
 The namespace declaration.
 #+begin_src clojure :tangle ./src/forge/model.cljc
 (ns forge.model
-  (:require [clojure.walk :refer [postwalk]]))
+  (:require [clojure.walk :refer [postwalk]]
+            [forge.proto :as f]))
 
 #+end_src
 
@@ -2108,21 +2083,41 @@ The namespace declaration.
 #+begin_src clojure :tangle ./src/forge/model.cljc
 (defn rect
   [x y]
-  [:rect {:x x :y y}])
+  [:rect {:origin [0 0 0]
+          :lcs {:lx [1 0 0]
+                :ly [0 1 0]
+                :lz [0 0 1]}
+          :x x :y y :center true}])
 
 (defn circle
   [r]
-  [:circle {:r r}])
+  [:circle {:origin [0 0 0]
+            :lcs {:lx [1 0 0]
+                  :ly [0 1 0]
+                  :lz [0 0 1]}
+            :r r}])
 
 (defn polygon
   ([pts]
-   [:polygon {:pts pts}])
+   [:polygon {:origin [0 0 0]
+              :lcs {:lx [1 0 0]
+                    :ly [0 1 0]
+                    :lz [0 0 1]}
+              :pts (vec pts) :paths [(vec (range (count pts)))]}])
   ([pts paths]
-   [:polygon {:pts pts :paths paths}]))
+   [:polygon {:origin [0 0 0]
+              :lcs {:lx [1 0 0]
+                    :ly [0 1 0]
+                    :lz [0 0 1]}
+              :pts (vec pts) :paths paths}]))
 
 (defn project
-  [cut & block]
-  [:project {:cut cut} block])
+  [block cut]
+  [:project {:origin [0 0 0]
+             :lcs {:lx [1 0 0]
+                   :ly [0 1 0]
+                   :lz [0 0 1]}
+             :cut cut} block])
 
 #+end_src
 
@@ -2130,107 +2125,201 @@ The namespace declaration.
 #+begin_src clojure :tangle ./src/forge/model.cljc
 (defn sphere
   [r]
-  [:sphere {:r r}])
+  [:sphere {:origin [0 0 0]
+            :lcs {:lx [1 0 0]
+                  :ly [0 1 0]
+                  :lz [0 0 1]}
+            :r r}])
 
 (defn box
   [x y z]
-  [:box {:x x :y y :z z}])
+  [:box {:origin [0 0 0]
+         :lcs {:lx [1 0 0]
+               :ly [0 1 0]
+               :lz [0 0 1]}
+         :x x :y y :z z :center true}])
 
 (defn cylinder
   ([r h]
-   [:cylinder {:r r :h h}])
+   [:cylinder {:origin [0 0 0]
+               :lcs {:lx [1 0 0]
+                     :ly [0 1 0]
+                     :lz [0 0 1]}
+               :r r :h h :center true}])
   ([r1 r2 h]
-   [:cylinder {:r1 r1 :r2 r2 :h h}]))
+   [:cylinder {:origin [0 0 0]
+               :lcs {:lx [1 0 0]
+                     :ly [0 1 0]
+                     :lz [0 0 1]}
+               :r1 r1 :r2 r2 :h h :center true}]))
 
 (defn polyhedron
   [pts faces]
-  [:polyhedron {:pts pts :faces faces}])
+  [:polyhedron {:origin [0 0 0]
+                :lcs {:lx [1 0 0]
+                      :ly [0 1 0]
+                      :lz [0 0 1]}
+                :pts pts :faces faces}])
 
 (defn extrude
-  [{:keys [height twist convexity center slices scale] :as opts} & block]
-  [:extrude opts block])
+  [block {:keys [height twist convexity center slices scale] :as opts}]
+  [:extrude (merge {:origin [0 0 0]
+                    :lcs {:lx [1 0 0]
+                          :ly [0 1 0]
+                          :lz [0 0 1]}}
+                   opts) block])
 
 (defn revolve
-  [{:keys [convexity angle] :as opts} & block]
-  [:revolve {:convexity convexity
-             :angle angle} block])
-
-#+end_src
-
-** transforms
-#+begin_src clojure :tangle ./src/forge/model.cljc
-(defn group
-  [& block]
-  [:group block])
-
-(defn resize
-  [[x y z] & block]
-  [:resize {:x x :y y :z z} block])
-
-(defn translate
-  [[x y z] & block]
-  [:translate {:x x :y y :z z} block])
-
-(defn rotatev
-  [a [x y z] block]
-  [:rotatev {:a a :x x :y y :z z} block])
-
-(defn rotatec
-  [[x y z] block]
-  [:rotatec {:x x :y y :z z} block])
-
-(defn rotate
-  [& block]
-  (if (number? (first block))
-    (rotatev (first block) (second block) (drop 2 block))
-    (rotatec (first block) (rest block))))
-
-(defn scale
-  [[x y z] & block]
-  [:scale {:x x :y y :z z} block])
-
-(defn mirror
-  [[x y z] & block]
-  [:mirror {:x x :y y :z z} block])
-
-(defn color
-  [[r g b a] & block]
-  [:color {:r r :g g :b b :a a} block])
-
-(defn hull
-  [& block]
-  [:hull {} block])
-
-(defn offset
-  [opts & block]
-  (if (number? opts)
-    [:offset {:r opts} block]
-    [:offset opts block]))
-
-(defn minkowski
-  [& block]
-  [:minkowski {} block])
-
-(defn multmatrix
-  [m & block]
-  [:multmatrix {:m m} block])
-
+  [block {:keys [convexity angle] :as opts}]
+  [:revolve (merge {:origin [0 0 0]
+                    :lcs {:lx [1 0 0]
+                          :ly [0 1 0]
+                          :lz [0 0 1]}}
+                   opts) block])
 #+end_src
 
 ** boolean
 #+begin_src clojure :tangle ./src/forge/model.cljc
 (defn union
-  [& forms]
-  [:union {} forms])
+  [& elems]
+  [:union {} elems])
 
 (defn intersection
-  [& forms]
-  [:intersection {} forms])
+  [& elems]
+  [:intersection {} elems])
 
 (defn difference
-  [& forms]
-  [:difference {} forms])
+  [& elems]
+  [:difference {} elems])
 
+#+end_src
+
+** transforms
+*** translate
+#+begin_src clojure :tangle ./src/forge/model.cljc
+(defn translate
+  [block [x y z]]
+  (let [[tag {:keys [origin] :as props} content] block
+        xf-props (-> props
+                     (assoc :origin (f/v+ origin [x y z]))
+                     (assoc :translation [x y z]))]
+    [:translate {:xf-elem (vec (filter some? [tag xf-props content]))
+                 :translation [x y z]
+                 :x x :y y :z z} block]))
+
+#+end_src
+
+*** rotate
+#+begin_src clojure :tangle ./src/forge/model.cljc
+(defn- rotate-lcs
+  [lcs [x y z]]
+  (let [[keys vals] ((juxt keys vals) lcs)]
+    (zipmap keys (map #(f/rotate-point % [x y z]) vals))))
+
+(defn rotate
+  ([block [x y z]]
+   (let [[tag {:keys [lcs] :as props} content] block
+         xf-props (-> props 
+                      (assoc :lcs (rotate-lcs lcs [x y z]))
+                      (assoc :rotation [x y z]))]
+     [:rotate {:xf-elem (vec (filter some? [tag xf-props content]))
+               :rotation [x y z]
+               :x x :y y :z z} block]))
+  
+  ([block a [x y z]]
+   [:rotate {:a a :x x :y y :z z} block]))
+
+#+end_src
+
+*** group
+#+begin_src clojure :tangle ./src/forge/model.cljc
+(defn group
+  [& content]
+  (if (and (= 1 (count content))
+           (not (keyword? (first (first content)))))
+    ;; content is a list of a list of elements
+    (into [:group {}] (first content))
+    ;; content is a single element OR a list of elements
+    (into [:group {}] (filter (complement nil?) content))))
+#+end_src
+
+*** resize
+#+begin_src clojure :tangle ./src/forge/model.cljc
+(defn resize
+  [block [x y z]]
+  [:resize {:x x :y y :z z} block])
+#+end_src
+
+*** scale
+#+begin_src clojure :tangle ./src/forge/model.cljc
+(defn scale
+  [block [x y z]]
+  [:scale {:x x :y y :z z} block])
+
+#+end_src
+
+*** mirror
+#+begin_src clojure :tangle ./src/forge/model.cljc
+(defn mirror
+  [block [x y z]]
+  [:mirror {:x x :y y :z z} block])
+
+#+end_src
+
+*** color
+#+begin_src clojure :tangle ./src/forge/model.cljc
+(defn color
+  [block [r g b a]]
+  [:color {:r r :g g :b b :a a} block])
+
+#+end_src
+
+*** hull
+#+begin_src clojure :tangle ./src/forge/model.cljc
+(defn hull
+  [block]
+  [:hull {} block])
+
+#+end_src
+
+*** offset
+#+begin_src clojure :tangle ./src/forge/model.cljc
+(defn offset
+  [block opts]
+  (if (number? opts)
+    [:offset {:r opts} block]
+    [:offset opts block]))
+
+#+end_src
+
+*** minkowski
+#+begin_src clojure :tangle ./src/forge/model.cljc
+(defn minkowski
+  [block]
+  [:minkowski {} block])
+
+#+end_src
+
+*** multmatrix
+#+begin_src clojure :tangle ./src/forge/model.cljc
+(defn multmatrix
+  [block mtx]
+  [:multmatrix {:mtx mtx} block])
+
+#+end_src
+
+** fig
+Forge Internal Geometry
+
+The idea is to provide a 2 stage model:
+
+1. the basic tree structure which is hiccup-style and relatively simple.
+2. the FIG direct model which is a map containing all necessary data for BREP, FREP, etc.
+
+Compilers can then use the tree structure OR the FIG structure or a hybrid. For example, the scad compiler only needs the tree structure... but the SVG compiler might be better with the FIG structure.
+
+
+#+begin_src clojure :tangle ./src/forge/model.cljc
 #+end_src
 
 * importers
@@ -2248,7 +2337,7 @@ coming.
 coming.
 
 *** ns
-#+begin_src clojure :tangle ./src/forge/import/images.cljc
+#+begin_src clojure :tangle ./src/forge/import/svg.cljc
 (ns forge.import.svg
   (:require [clojure.java.shell :refer [sh]]
             [clojure.string :as str]
@@ -2265,7 +2354,7 @@ Coming.
 
 ** scad-drawing
 *** ns
-#+begin_src clojure :tangle ./src/forge/import/images.cljc
+#+begin_src clojure :tangle ./src/forge/import/images.clj
 (ns forge.import.images
   (:require [clojure.java.shell :refer [sh]]
             [clojure.string :as str]
@@ -2449,33 +2538,59 @@ This part of the library has an external dependency on vtracer:
 
 #+end_src
 
-
-
 * compilers
 A collection of methods for exporting models.
 
 ** scad
+This is based off of Matthew Farrell's work on scad-clj. The code is modified in the following ways:
+
+- uses some different names
+  - cube -> box
+  - extrude-linear -> extrude
+  - extrude-rotate -> revolve
+
+- uses vectors instead of lists (more hiccup-like) as the expr data structure
+
+- some scad specifics are removed. This is to have 1-1 language for all compilation targets
+  - fn! is not used because it does not have an equivalent in FreeCAD, SolidWorks, etc.
+
 *** ns
-#+begin_src clojure
+#+begin_src clojure :tangle ./src/forge/compile/scad.cljc
 (ns forge.compile.scad
-  (:require [clojure.string :as str]
+  (:require [clojure.java.shell :refer [sh]]
+            [clojure.string :as str]
             [forge.proto :as f :refer [to-rad
                                        to-deg]]))
 #+end_src
 
+*** write-expr
+#+begin_src clojure :tangle ./src/forge/compile/scad.cljc
+;; multimethod
+(defmulti write-expr
+  (fn [depth element]
+    (if (keyword? (first element)) (first element) :list)))
+
+(defmethod write-expr :list
+  [depth [& elems]]
+  (mapcat #(write-expr depth %1) elems))
+
+#+end_src
+
 *** utility
-#+begin_src clojure
+#+begin_src clojure :tangle ./src/forge/compile/scad.cljc
 ;; utility
+(defn indent
+  [depth]
+  (str/join (repeat depth "  ")))
 
-(defn indent [depth]
-  (join (repeat depth "  ")))
-
-(defn write-block [depth block]
+(defn write-block
+  [depth block]
   (mapcat #(write-expr (inc depth) %1) block))
 
 (declare map-to-arg-string)
 
-(defn make-arguments [args]
+(defn make-arguments
+  [args]
   (let [arg (first args)
         rest (rest args)
         piece (cond
@@ -2484,161 +2599,81 @@ A collection of methods for exporting models.
                :else arg)]
     (if (empty? rest)
       piece
-      (join ", " [piece (make-arguments rest)]))))
+      (str/join ", " [piece (make-arguments rest)]))))
 
-(defn map-to-arg-string [m]
-  (join ", " (map (fn [[k v]] (str (name k) "=" (make-arguments [v])) ) m)))
-
-#+end_src
-
-*** write-expr
-#+begin_src clojure
-;; multimethod
-
-(defmulti write-expr
-  (fn [depth [form & args]]
-    (if (keyword? form) form :list)))
-
-(defmethod write-expr :default [depth [form & args]]
-  `("//(" ~form ~args ")"))
-
-(defmethod write-expr :list [depth [& args]]
-  (mapcat #(write-expr depth %1) args))
-
-#+end_src
-
-*** module-impl
-#+begin_src clojure
-(defmethod write-expr :modifier [depth [form modifier & block]]
-  (concat
-   (list (indent depth) modifier "union () {\n")
-   (write-block depth block)
-   (list (indent depth) "}\n")))
-
-(defmethod write-expr :include [depth [form {:keys [library]}]]
-  (list (indent depth) "include <" library">\n"))
-
-(defmethod write-expr :use [depth [form {:keys [library]}]]
-  (list (indent depth) "use <" library">\n"))
-
-(defmethod write-expr :import [depth [form file]]
-  (list (indent depth) "import (\"" file "\");\n"))
-
-(defmethod write-expr :call [depth [form {:keys [function]} & args]]
-  (list (indent depth) function "(" (make-arguments (apply vec args)) ");\n"))
-
-(defmethod write-expr :call-module-with-block [depth [form {:keys [module]} & args]]
-  (let [the-args (butlast (first args))
-        block (list (last (first args)))]
-    (concat
-     (list (indent depth) module " (" (make-arguments (vec the-args)) ") {\n")
-     (write-block depth block)
-     (list (indent depth) "}\n"))))
-
-(defmethod write-expr :call-module-no-block [depth [form {:keys [module]} & args]]
-  (let [the-args (first args)]
-    (list (indent depth) module " (" (make-arguments (vec the-args)) ");\n")))
-
-(defmethod write-expr :define-module [depth [form {:keys [module]} & args]]
-  (let [the-args (butlast (first args))
-        block (list (last (first args)))]
-    (concat
-     (list (indent depth) "module " module "(" (make-arguments (vec the-args)) ") {\n")
-     (write-block depth block)
-     (list (indent depth) "};\n"))))
-
-#+end_src
-
-*** special-vars-impl
-#+begin_src clojure
-(defmethod write-expr :fa [depth [form x]]
-  (list (indent depth) "$fa = " x ";\n"))
-
-(defmethod write-expr :fn [depth [form x]]
-  (list (indent depth) "$fn = " x ";\n"))
-
-(defmethod write-expr :fs [depth [form x]]
-  (list (indent depth) "$fs = " x ";\n"))
-
-#+end_src
-
-*** text-impl
-#+begin_src clojure
-(defmethod write-expr :text [depth [form {:keys [text size font halign valign spacing direction language script fn]}]]
-  (list (indent depth) "text (\"" text "\""
-        (when fn (str ", $fn=" fn))
-        (when size (str ", size=" size))
-        (when font (str ", font=\"" font "\""))
-        (when halign (str ", halign=\"" halign "\""))
-        (when valign (str ", valign=\"" valign "\""))
-        (when spacing (str ", spacing=" spacing))
-        (when direction (str ", direction=\"" direction "\""))
-        (when language (str ", language=\"" language "\""))
-        (when script (str ", script=\"" script "\""))");\n"))
+(defn map-to-arg-string
+  [m]
+  (str/join ", " (map (fn [[k v]] (str (name k) "=" (make-arguments [v])) ) m)))
 
 #+end_src
 
 *** 2d-impl
-#+begin_src clojure
-(defmethod write-expr :circle [depth [form {:keys [r fa fn fs center]}]]
-  (let [fargs (str (and fa (str "$fa=" fa ", "))
-                   (and fn (str "$fn=" fn ", "))
-                   (and fs (str "$fs=" fs ", ")))]
-    (list (indent depth) "circle (" fargs "r=" r ");\n")))
+#+begin_src clojure :tangle ./src/forge/compile/scad.cljc
+(defmethod write-expr :circle
+  [depth [_ {:keys [r center]}]] 
+  (list (indent depth) 
+        "circle (r=" r ");\n"))
 
-(defmethod write-expr :rect [depth [form {:keys [x y center]}]]
-  (list (indent depth) "square ([" x ", " y "]"
+(defmethod write-expr :rect
+  [depth [_ {:keys [x y center]}]]
+  (list (indent depth)
+        "square ([" x ", " y "]"
         (when center ", center=true") ");\n"))
 
-(defmethod write-expr :polygon [depth [form {:keys [points paths convexity]}]]
+(defmethod write-expr :polygon
+  [depth [_ {:keys [pts paths convexity]}]]
   `(~@(indent depth) "polygon ("
-    "points=[[" ~(join "], [" (map #(join ", " %1) points)) "]]"
-    ~@(when paths [", paths=[[" (join "], [" (map #(join "," %1) paths)) "]]"])
+    "points=[[" ~(str/join "], [" (map #(str/join ", " %1) pts)) "]]"
+    ~@(when paths [", paths=[[" (str/join "], [" (map #(str/join "," %1) paths)) "]]"])
     ~@(when convexity [", convexity=" convexity])
     ");\n"))
 
-(defmethod write-expr :project [depth [form {:keys [cut]} & block]]
+(defmethod write-expr :project
+  [depth [_ {:keys [cut]} & block]]
   (concat
-   (list (indent depth) "projection (cut = " cut ") {\n")
+   (list (indent depth) 
+         "projection (cut = " cut ") {\n")
    (mapcat #(write-expr (inc depth) %1) block)
    (list (indent depth) "}\n")))
 
 #+end_src
 
 *** 3d-impl
-#+begin_src clojure
-(defmethod write-expr :sphere [depth [form {:keys [r fa fn fs center]}]]
-  (let [fargs (str (and fa (str "$fa=" fa ", "))
-                   (and fn (str "$fn=" fn ", "))
-                   (and fs (str "$fs=" fs ", ")))]
-    (list (indent depth) "sphere (" fargs "r=" r ");\n")))
+#+begin_src clojure :tangle ./src/forge/compile/scad.cljc
+(defmethod write-expr :sphere
+  [depth [_ {:keys [r center]}]]
+  (list (indent depth) 
+        "sphere (r=" r ");\n"))
 
-(defmethod write-expr :box [depth [form {:keys [x y z center]}]]
-  (list (indent depth) "cube ([" x ", " y ", " z "]"
+(defmethod write-expr :box
+  [depth [_ {:keys [x y z center]}]]
+  (list (indent depth)
+        "cube ([" x ", " y ", " z "]"
         (when center ", center=true") ");\n"))
 
-(defmethod write-expr :cylinder [depth [form {:keys [h r r1 r2 fa fn fs center]}]]
-  (let [fargs (str (and fa (str "$fa=" fa ", "))
-                   (and fn (str "$fn=" fn ", "))
-                   (and fs (str "$fs=" fs ", ")))]
-    (concat
-     (list (indent depth) "cylinder (" fargs "h=" h)
-     (if r (list ", r=" r) (list ", r1=" r1 ", r2=" r2))
-     (when center (list ", center=true"))
-     (list ");\n"))))
+(defmethod write-expr :cylinder
+  [depth [_ {:keys [h r r1 r2 center]}]]
+  (concat
+   (list (indent depth) 
+         "cylinder (h=" h)
+   (if r (list ", r=" r) (list ", r1=" r1 ", r2=" r2))
+   (when center (list ", center=true"))
+   (list ");\n")))
 
-(defmethod write-expr :polyhedron [depth [form {:keys [points faces convexity]}]]
+(defmethod write-expr :polyhedron
+  [depth [_ {:keys [pts faces convexity]}]]
   `(~@(indent depth) "polyhedron ("
-    "points=[[" ~(join "], [" (map #(join ", " %1) points)) "]], "
-    "faces=[[" ~(join "], [" (map #(join ", " %1) faces)) "]]"
+    "points=[[" ~(str/join "], [" (map #(str/join ", " %1) pts)) "]], "
+    "faces=[[" ~(str/join "], [" (map #(str/join ", " %1) faces)) "]]"
     ~@(if (nil? convexity) [] [", convexity=" convexity])
     ");\n"))
 
 
-(defmethod write-expr :extrude [depth [form {:keys [height twist convexity center slices scale]} & block]]
+(defmethod write-expr :extrude
+  [depth [_ {:keys [height twist convexity center slices scale]} block]]
   (concat
    (list (indent depth) "linear_extrude (height=" height)
-   (if (nil? twist) [] (list ", twist=" (rad->deg twist)))
+   (if (nil? twist) [] (list ", twist=" (to-deg twist)))
    (if (nil? convexity) [] (list ", convexity=" convexity))
    (if (nil? slices) [] (list ", slices=" slices))
    (cond
@@ -2651,10 +2686,11 @@ A collection of methods for exporting models.
    (mapcat #(write-expr (inc depth) %1) block)
    (list (indent depth) "}\n")))
 
-(defmethod write-expr :revolve [depth [form {:keys [convexity fn angle]} & block]]
+(defmethod write-expr :revolve
+  [depth [_ {:keys [convexity fn angle]} block]]
   (concat
    (list (indent depth) "rotate_extrude (")
-   (join ", "
+   (str/join ", "
      (concat
        (if convexity [(str "convexity=" convexity)])
        (if angle [(str "angle=" angle)])
@@ -2663,7 +2699,8 @@ A collection of methods for exporting models.
    (mapcat #(write-expr (inc depth) %1) block)
    (list (indent depth) "}\n")))
 
-(defmethod write-expr :surface [depth [form {:keys [filepath convexity center invert]}]]
+(defmethod write-expr :surface
+  [depth [_ {:keys [filepath convexity center invert]}]]
   (concat
    (list (indent depth) "surface (file = \"" filepath "\""
          (when convexity (format ", convexity=%d" convexity))
@@ -2674,57 +2711,62 @@ A collection of methods for exporting models.
 #+end_src
 
 *** transforms-impl
-#+begin_src clojure
-(defmethod write-expr :resize [depth [form {:keys [x y z auto]} & block]]
+#+begin_src clojure :tangle ./src/forge/compile/scad.cljc
+(defmethod write-expr :resize
+  [depth [_ {:keys [x y z auto]} block]]
   (concat
    (list (indent depth) "resize ([" x ", " y ", " z "]")
    (list (when-not (nil? auto)
            (str " auto="
                 (if (coll? auto)
-                  (str "[" (join ", " (map true? auto)) "]")
+                  (str "[" (str/join ", " (map true? auto)) "]")
                   (true? auto)))))
    "){\n"
    (mapcat #(write-expr (inc depth) %1) block)
    (list (indent depth) "}\n")))
 
-(defmethod write-expr :translate [depth [form [x y z] & block]]
+(defmethod write-expr :translate
+  [depth [_ {:keys [x y z]} block]]
   (concat
    (list (indent depth) "translate ([" x ", " y ", " z "]) {\n")
-   (mapcat #(write-expr (inc depth) %1) block)
+   (write-expr (inc depth) block)
    (list (indent depth) "}\n")))
 
-(defmethod write-expr :rotatev [depth [form [a [x y z]] & block]]
-  (concat
-   (list (indent depth) "rotate (a=" (rad->deg a) ", v=[" x ", " y ", " z "]) {\n")
-   (write-block depth block)
-   (list (indent depth) "}\n")))
+(defmethod write-expr :rotate
+  [depth [_ {:keys [a x y z]} block]]
+  (if a
+    (concat
+     (list (indent depth) "rotate (a=" a ", v=[" x ", " y ", " z "]) {\n")
+     (write-expr (inc depth) block)
+     (list (indent depth) "}\n"))
+    (concat
+     (list (indent depth) "rotate ([" x "," y "," z "]) {\n")
+     (write-expr (inc depth) block)
+     (list (indent depth) "}\n"))))
 
-(defmethod write-expr :rotatec [depth [form [x y z] & block]]
-  (concat
-   (list (indent depth) "rotate ([" (rad->deg x) "," (rad->deg y) "," (rad->deg z) "]) {\n")
-   (write-block depth block)
-   (list (indent depth) "}\n")))
-
-(defmethod write-expr :scale [depth [form [x y z] & block]]
+(defmethod write-expr :scale
+  [depth [_ {:keys [x y z]} block]]
   (concat
    (list (indent depth) "scale ([" x ", " y ", " z "]) {\n")
-   (write-block depth block)
+   (write-expr (inc depth) block)
    (list (indent depth) "}\n")))
 
-(defmethod write-expr :mirror [depth [form [x y z] & block]]
+(defmethod write-expr :mirror
+  [depth [_ {:keys [x y z]} block]]
   (concat
    (list (indent depth) "mirror ([" x ", " y ", " z "]) {\n")
-   (write-block depth block)
+   (write-expr (inc depth) block)
    (list (indent depth) "}\n")))
 
-(defmethod write-expr :hull [depth [form & block]]
+(defmethod write-expr :hull
+  [depth [_ _ block]]
   (concat
    (list (indent depth) "hull () {\n")
-   (mapcat #(write-expr (inc depth) %1) block)
+   (write-expr (inc depth) block)
    (list (indent depth) "}\n")))
 
 (defmethod write-expr :offset
-  [depth [form {:keys [r delta chamfer] :or {chamfer false}} & block]]
+  [depth [_ {:keys [r delta chamfer] :or {chamfer false}} block]]
   (concat
    (list (indent depth) "offset (")
    (if r
@@ -2732,21 +2774,23 @@ A collection of methods for exporting models.
      (list "delta = " delta))
    (when chamfer (list ", chamfer=true"))
    (list ") {\n")
-   (mapcat #(write-expr (inc depth) %1) block)
+   (write-expr (inc depth) block)
    (list (indent depth) "}\n")))
 
-(defmethod write-expr :minkowski [depth [form & block]]
+(defmethod write-expr :minkowski
+  [depth [_ _ block]]
   (concat
    (list (indent depth) "minkowski () {\n")
-   (mapcat #(write-expr (inc depth) %1) block)
+   (write-expr (inc depth) block)
    (list (indent depth) "}\n")))
 
-(defmethod write-expr :multmatrix [depth [form m & block]]
-  (let [w (fn [s] (str "[" s "]")) ;; wrap
-        co (fn [c] (apply str (interpose "," c)))] ;; put commas in between
+(defmethod write-expr :multmatrix
+  [depth [_ {:keys [mtx]} block]]
+  (let [w (fn [s] (str "[" s "]"))
+        co (fn [c] (apply str (interpose "," c)))]
     (concat
      (list (indent depth) "multmatrix(")
-     (w (co (map #(w (co %)) m)))
+     (w (co (map #(w (co %)) mtx)))
      (list ") {\n")
      (mapcat #(write-expr (inc depth) %1) block)
      (list (indent depth) "}\n"))))
@@ -2754,20 +2798,23 @@ A collection of methods for exporting models.
 #+end_src
 
 *** boolean-impl
-#+begin_src clojure
-(defmethod write-expr :union [depth [form & block]]
+#+begin_src clojure :tangle ./src/forge/compile/scad.cljc
+(defmethod write-expr :union
+  [depth [_ _ block]]
   (concat
    (list (indent depth) "union () {\n")
    (write-block depth block)
    (list (indent depth) "}\n")))
 
-(defmethod write-expr :difference [depth [form & block]]
+(defmethod write-expr :difference
+  [depth [_ _ block]]
   (concat
    (list (indent depth) "difference () {\n")
    (mapcat #(write-expr (inc depth) %1) block)
    (list (indent depth) "}\n")))
 
-(defmethod write-expr :intersection [depth [form & block]]
+(defmethod write-expr :intersection
+  [depth [_ _ block]]
   (concat
    (list (indent depth) "intersection () {\n")
    (mapcat #(write-expr (inc depth) %1) block)
@@ -2776,20 +2823,16 @@ A collection of methods for exporting models.
 #+end_src
 
 *** other-impl
-#+begin_src clojure
-(defmethod write-expr :color [depth [form [r g b a] & block]]
+#+begin_src clojure :tangle ./src/forge/compile/scad.cljc
+(defmethod write-expr :color
+  [depth [_ [r g b a] block]]
   (concat
     (list (indent depth) "color ([" r ", " g ", " b ", " a"]) {\n")
     (write-block depth block)
     (list (indent depth) "}\n")))
 
-(defmethod write-expr :render [depth [form {:keys [convexity]} & block]]
-  (concat
-   (list (indent depth) (str "render (convexity=" convexity ") {\n"))
-   (mapcat #(write-expr (inc depth) %1) block)
-   (list (indent depth) "}\n")))
-
-(defmethod write-expr :group [depth [form & block]]
+(defmethod write-expr :group 
+  [depth [_ _ block]]
   (concat
    (list (indent depth) "group() {\n")
    (mapcat #(write-expr (inc depth) %1) block)
@@ -2798,8 +2841,218 @@ A collection of methods for exporting models.
 #+end_src
 
 *** write-scad
-#+begin_src clojure
+#+begin_src clojure :tangle ./src/forge/compile/scad.cljc
 (defn write-scad [& block]
-  (join (write-expr 0 block)))
+  (str/join (write-expr 0 block)))
+
+#+end_src
+
+*** tools
+#+begin_src clojure :tangle ./src/forge/compile/scad.cljc
+(defn png!
+  [fname mdl-data]
+  (let [scad (write-scad [#_(fn! 20) mdl-data])]
+    (sh "openscad" "/dev/stdin"
+        "--imgsize" "400,400"
+        "--projection" "orthogonal"
+        "--colorscheme" #_"greenscreen" "Nord"
+        #_"--camera" #_"0,0,0,55,0,25,2900"
+        "-o" fname
+        :in scad)))
+
+(defn cider-show
+  [mdl-data]
+  (let [fname "_imgtmp.png"]
+    (do (png! fname mdl-data)
+        (clojure.java.io/file fname))))
+
+#+end_src
+
+** svg
+The initial idea for SVG is to represent all shapes with edges and faces using svg-clj.path/polygon-path fn.
+
+Every elem-to-svg needs the element and a transform function (xf) which takes a list of 3D points and returns a list of 2D points which fit the desired ortho projection (isometric being default).
+
+*** ns
+#+begin_src clojure :tangle ./src/forge/compile/svg.cljc
+(ns forge.compile.svg
+  (:require [clojure.java.shell :refer [sh]]
+            [clojure.string :as str]
+            [svg-clj.elements :as svg]
+            [svg-clj.path :as path]
+            [svg-clj.transforms :as tf]
+            [svg-clj.tools :as tools]
+            [hiccup.core :refer [html]]
+            [forge.proto :as f :refer [to-rad
+                                       to-deg]]))
+
+#+end_src
+
+*** elem-to-svg
+#+begin_src clojure :tangle ./src/forge/compile/svg.cljc
+;; multimethod
+(defmulti elem-to-svg
+  (fn [element _]
+    (if (keyword? (first element)) 
+      (first element) 
+      :list)))
+
+(defmethod elem-to-svg :list 
+  [[& args] xf]
+  (map #(elem-to-svg % xf) args))
+
+(defn block-to-svg [block xf]
+  (map #(elem-to-svg % xf) block))
+
+#+end_src
+
+*** 2d-impl
+#+begin_src clojure :tangle ./src/forge/compile/svg.cljc
+(defmethod elem-to-svg :circle
+  [[_ {:keys [r center origin rotation translation]}] xf]
+  (let [rot (if rotation rotation [0 0 0])
+        tr (if translation translation [0 0 0])
+        pts (->> (f/regular-polygon-pts r 40)
+                 (mapv #(conj % 0))
+                 (mapv #(f/v+ origin %))
+                 (mapv #(f/rotate-point % rot))
+                 xf)]
+    (-> (path/polygon-path pts)
+        (tf/style {:fill "none"
+                   :stroke "black"
+                   :stroke-width "2px"}))))
+
+(defmethod elem-to-svg :rect 
+  [[_ {:keys [x y center origin rotation]}] xf]
+  (let [pts (->> (if center
+                   [ [(/ x -2.0) (/ y -2.0)]
+                    [(/ x 2.0) (/ y -2.0)] 
+                    [(/ x 2.0) (/ y 2.0)]
+                    [(/ x -2.0) (/ y 2.0)] ]
+                   [ [0 0] [x 0] [x y] [0 y] ])
+                 (mapv #(f/v+ origin %))
+                 (mapv #(f/rotate-point % rotation))
+                 xf)]
+    (-> (path/polygon-path pts)
+        (tf/style {:fill "none"
+                   :stroke "black"
+                   :stroke-width "2px"}))))
+
+(defmethod elem-to-svg :polygon
+  [[_ {:keys [pts paths convexity]}] xf]
+  (let [polygons (for [path paths]
+                   (xf (map #(get pts %) path)))]
+    (-> (apply path/merge-paths 
+               (map path/polygon-path polygons))
+        (tf/style {:fill "none"
+                   :stroke "black"
+                   :stroke-width "2px"}))))
+
+#+end_src
+
+*** transforms-impl
+#+begin_src clojure :tangle ./src/forge/compile/svg.cljc
+(defmethod elem-to-svg :translate 
+  [[_ {:keys [xf-elem]} block] xf]
+  (elem-to-svg xf-elem xf))
+
+(defmethod elem-to-svg :rotate 
+  [[_ {:keys [xf-elem]} block] xf]
+  (elem-to-svg xf-elem xf))
+
+#+end_src
+
+*** proto
+#+begin_src clojure :tangle ./src/forge/compile/svg.cljc
+(def iso-euler-angles [35.264 45 0])
+(def origin-angle-adjust-a [90 0 0])
+(def origin-angle-adjust-b [0 -90 0])
+
+(defn rotate-points
+  [[ax ay az] pts]
+  (mapv #(f/rotate-point % [ax ay az]) pts))
+
+(defn isometric-xf
+  [pts]
+  (->> pts
+       (rotate-points origin-angle-adjust-a)
+       (rotate-points origin-angle-adjust-b)
+       (rotate-points iso-euler-angles)
+       (mapv #(into [] (drop-last %)))))
+
+(defn top-xf
+  [pts]
+  (-> pts
+      (rotate-points [0 0 0])))
+
+(defn right-xf
+  [pts]
+  (-> pts
+      (rotate-points [90 0 0])))
+
+(defn write-svg
+  [& mdl-data]
+  (->> mdl-data
+       (mapv #(elem-to-svg % isometric-xf))
+       svg/g
+       svg/svg
+       #_html))
+
+#+end_src
+
+* scratch
+A namespace for playing around with fns
+
+#+begin_src clojure
+(ns forge.scratch
+  (:require [forge.model :as mdl]
+            [forge.proto :as proto]
+            [forge.compile.scad :as scad]
+            [forge.compile.svg :as svg]))
+
+(defn fillet-tool [r l]
+  (-> (mdl/difference
+       (mdl/box (* r 3) (* r 3) l)
+       (mdl/cylinder r (* l 2))
+       (-> (mdl/box (* r 3.1) (* r 3.1) (* l 2))
+           (mdl/translate [(* r -1.5) 0 0]))
+       (-> (mdl/box (* r 3.1) (* r 3.1) (* l 2))
+           (mdl/translate [0 (* r -1.5) 0])))
+      (mdl/translate [(- r) ( - r) 0])))
+
+(def plate
+  (let [[w l t] [56 85 1.5]
+        fillet-r 2.5
+        hole-r 1.35
+        mount-hole (mdl/union
+                    (mdl/cylinder hole-r (* 2 t))
+                    (mdl/translate (mdl/cylinder 3 1) [0 0 1.1])
+                    (mdl/translate (mdl/cylinder 3 1) [0 0 -1.1]))]
+    (-> (mdl/difference
+         ;; plate base
+         (mdl/box w l t)
+         ;; fillets
+         (-> (fillet-tool fillet-r 4)
+             (mdl/rotate [0 0 0])
+             (mdl/translate [(/ w 2) (/ l 2) 0]))
+         (-> (fillet-tool fillet-r 4)
+             (mdl/rotate [0 0 (proto/to-rad 90)])
+             (mdl/translate [(/ w -2) (/ l 2) 0]))
+         (-> (fillet-tool fillet-r 4)
+             (mdl/rotate [0 0 (proto/to-rad 180)])
+             (mdl/translate [(/ w -2) (/ l -2) 0]))
+         (-> (fillet-tool fillet-r 4)
+             (mdl/rotate [0 0 (proto/to-rad 270)])
+             (mdl/translate [(/ w 2) (/ l -2) 0]))
+         ;; mount holes
+         (-> mount-hole
+             (mdl/translate [(- (/ w 2) 3.25) (- (/ l 2) 3.25) 0]))
+         (-> mount-hole
+             (mdl/translate [(+ (/ w -2) 3.25) (- (/ l 2) 3.25) 0]))
+         (-> mount-hole
+             (mdl/translate [(+ (/ w -2) 3.25) (+ (/ l -2) 23.25) 0]))
+         (-> mount-hole
+             (mdl/translate [(- (/ w 2) 3.25) (+ (/ l -2) 23.25) 0])))
+        (mdl/translate [0 0 (/ t -2.0)]))))
 
 #+end_src

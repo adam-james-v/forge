@@ -1,479 +1,6 @@
 (ns forge.proto
   (:require [forge.delaunay :as delaunay]
-            [same :refer [ish? zeroish?]]
-            [scad-clj.model :as scad]
-            [scad-clj.scad :refer [write-scad]]
-            [scad-clj.csg :refer [write-csg]]))
-
-;; hello
-
-(def sample-model
-  {:history "the quoted most recent fn call with eval'd args."
-   :frep "the single FREP function which produces the shape"
-   :ref "list of reference elements like center points and lines"
-   :vertices "list of vertices, excluding ref elements"
-   :curves "list of parametric curve functions"
-   :surfaces "list of parametric surface functions"
-   :volumes "list of volume functions"})
-
-(defn frep-union [f g]
-  (fn [pt]
-    (let [a (f pt)
-          b (g pt)]
-      (min a b))))
-
-(defn brep-curve-union
-  [& curves]
-  (let [n (count curves)
-        intervals (map #(vector % (inc %)) (range n))]
-    (fn [t]
-      (let [t (* n t)]
-        (cond
-          (= (float t) 0.0) ((first curves) 0)
-          (= (float t) (float n)) ((last curves) 1)
-          :else
-          (first
-           (filter 
-            some?
-            (map #(remap-within %1 %2 t) curves intervals))))))))
-
-(defn brep-surface-union
-  [& surfaces]
-  (let [n (count surfaces)
-        intervals (map #(vector % (inc %)) (range n))]
-    (fn [u v]
-      (let [partial-surfaces (map #(partial % u) surfaces)]
-        ((apply brep-curve-union partial-surfaces) v)))))
-
-(defn union
-  [shape1 shape2]
-  (let [s1 (dissoc shape1 :frep :history)
-        s2 (dissoc shape2 :frep :history)]
-    (merge
-     (merge-with (comp vec concat) s1 s2)
-     {:frep (frep-union (:frep shape1) (:frep shape2))
-      :history [`(union ~shape1 ~shape2)]})))
-
-
-
-(defn frep-difference [f g]
-  (fn [pt]
-    (let [a (f pt)
-          b (* -1 (g pt))]
-      (max a b))))
-
-(defn frep-intersection [f g]
-  (fn [pt]
-    (let [a (f pt)
-          b (g pt)]
-      (max a b))))
-
-(defn frep-translate
-  [f pos]
-  (fn [pt]
-    (f (v+ pt pos))))
-
-(defn brep-translate
-  [f pos]
-  (comp #(v+ pos %) f))
-
-(defn translate
-  [shape pos]
-  (merge
-   shape
-   {:history (conj (:history shape) `(translate ~shape ~pos))
-    :frep (frep-translate (:frep shape) pos)
-    :vertices (mapv (partial v+ pos) (:vertices shape))
-    :curves (mapv #(brep-translate % pos) (:curves shape))
-    :surfaces (mapv #(brep-translate % pos) (:surfaces shape))
-    :volumes (mapv #(brep-translate % pos) (:volumes shape))}))
-
-(defn sin-cos-pair [theta]
-  [(Math/sin (to-rad theta)) (Math/cos (to-rad theta))])
-
-(defn rot-pt-2d
-  [[x y] theta]
-  (let [[s-t c-t] (sin-cos-pair theta)]
-    [(- (* x c-t) (* y s-t))
-     (+ (* y c-t) (* x s-t))]))
-
-;; this rotates a point around [0,0,0]
-(defn rot-pt
-  [[x y z] axis theta]
-  (cond
-    (= axis :x) (into [x] (rot-pt-2d [y z] theta))
-    (= axis :y) (apply #(into [] [%2 y %1]) (rot-pt-2d [z x] theta))
-    (= axis :z) (into (rot-pt-2d [x y] theta) [z])))
-
-(defn rotate-point
-  [pt [ax ay az]]
-  (-> pt
-      (rot-pt :z az)
-      (rot-pt :y ay)
-      (rot-pt :x ax)))
-
-(defn brep-rotate
-  [f angles]
-  (comp #(rotate-point % angles) f))
-
-(defn frep-rotate
-  [f angles]
-  (fn [pt]
-    (f (rotate-point pt angles))))
-
-(defn rotate
-  [shape angles]
-  (merge
-   shape
-   {:history (conj (:history shape) `(rotate ~shape ~angles))
-    :frep (frep-rotate (:frep shape) angles)
-    :vertices (mapv #(rotate-point % angles) (:vertices shape))
-    :curves (mapv #(brep-rotate % angles) (:curves shape))
-    :surfaces (mapv #(brep-rotate % angles) (:surfaces shape))
-    :volumes (mapv #(brep-rotate % angles) (:volumes shape))}))
-
-(defn frep-scale
-  [f scales]
-  (fn [pt]
-    (f (v* pt scales))))
-
-(defn brep-scale
-  [f scales]
-  (comp #(v* scales %) f))
-
-(defn scale
-  [shape scales]
-  (merge
-   shape
-   {:history (conj (:history shape) `(scale ~shape ~scales))
-    :frep (frep-scale (:frep shape) scales)
-    :vertices (mapv (partial v* scales) (:vertices shape))
-    :curves (mapv #(brep-scale % scales) (:curves shape))
-    :surfaces (mapv #(brep-scale % scales) (:surfaces shape))
-    :volumes (mapv #(brep-scale % scales) (:volumes shape))}))
-
-(defn frep-extrude
-  [f h]
-  (fn [pt]
-    (let [d (f (drop-last pt))
-          w [d (- (Math/abs (last pt)) h)]]
-      (+ (min (apply max w) 0)
-         (distance [0 0]
-                   [(max (first w) 0) (max (second w) 0)])))))
-
-(declare brep-line)
-(defn brep-curve-extrude
-  [c h]
-  (fn [u v]
-    (let [c2 (brep-line (c u) (v+ (c u) [0 0 h]))]
-      (c2 v))))
-
-(defn brep-surface-extrude
-  [s h]
-  (fn [u v w]
-    (let [c1 (brep-line (s u v) (v+ (s u v) [0 0 h]))]
-      c1 v)))
-
-(defn extrude
-  [shape h]
-  (let [vertices (mapv (partial v+ [0 0 h]) (:vertices shape))]
-    (merge
-     (merge-with
-      (comp vec concat)
-      shape
-      {:vertices vertices
-       :curves (concat
-                (mapv #(brep-translate % [0 0 h]) (:curves shape))
-                (mapv #(brep-line %1 %2) (:vertices shape) vertices))
-       :surfaces (concat
-                  [(brep-translate (first (:surfaces shape)) [0 0 h])]
-                  (mapv #(brep-curve-extrude % h) (:curves shape)))
-       :volumes [(brep-surface-extrude (first (:surfaces shape)) h)]})
-     {:history `(extrude ~shape ~h)
-      :frep (frep-extrude (:frep shape) h)})))
-
-(defn brep-curve-straight-sweep
-  [c1 c2]
-  (fn [u v]
-    (v+ (c1 u) (c2 v))))
-
-(defn brep-surface-straight-sweep
-  [s c]
-  (fn [u v w]
-    (v+ (s u v) (c w))))
-
-(defn frep-revolve
-  [f r]
-  (fn [pt]
-    (let [q [(- (distance [0 0] [(first pt) (last pt)]) r) 
-             (second pt)]]
-      (f q))))
-
-(defn vertex
-  [[x y z]]
-  {:history `(vertex [~x ~y ~z])
-   :frep (fn [pt]
-           (distance [x y z] pt))
-   :vertices [[x y z]]})
-
-(defn frep-line
-  [a b]
-  (fn [pt]
-    (let [pa (map - pt a)
-          ba (map - b a)
-          h (clamp (/ (dot* pa ba) (dot* ba ba)) 0 1)]
-      (distance (map - pa (map * ba (repeat h))) [0 0 0]))))
-
-(defn brep-line
-  [a b]
-  (fn [t]
-    (cond
-      (= t :tag) :line
-      (= (float t) 0.0) a
-      (= (float t) 1.0) b
-      :else
-      (v+ a (v* (v- b a) (repeat t))))))
-
-(defn line
-  [a b]
-  {:history `(line ~a ~b)
-   :frep (frep-line a b)
-   :vertices [a b]
-   :curves [(brep-line a b)]})
-
-(defn brep-polyline
-  [pts]
-  (let [step (/ 1.0 (dec (count pts)))
-        intervals (partition 2 1 (range 0 (+ 1 step) step))
-        lines (map (partial apply brep-line) (partition 2 1 pts))]
-    (fn [t]
-      (cond 
-        (= t :tag) :polyline
-        (= (float t) 0.0) (first pts)
-        (= (float t) 1.0) (last pts)
-        :else
-        (first (filter some?
-                       (map #(remap-within %1 %2 t) lines intervals)))))))
-
-(defn frep-circle
-  [r]
-  (fn [pt]
-    (- (distance pt [0 0 0]) r)))
-
-;;https://mathforum.org/library/drmath/view/63755.html
-(defn brep-curve-circle
-  [a b c]
-  (let [n (normalize (normal a b c))
-        r (radius-from-pts a b c)
-        cp (center-from-pts a b c)
-        u (normalize (mapv - a cp))
-        v (cross* n u)]
-    (fn [t]
-      (cond
-        (= t :tag) :circle
-        (or (< t 0.0) (> t 1.0)) nil
-        (= (float t) 0.0) a
-        (= (float t) 1.0) a
-        :else
-        (let [t (* 2 Math/PI t)]
-          (v+ cp
-              (v* (repeat (* r (Math/cos t))) u)
-              (v* (repeat (* r (Math/sin t))) v)))))))
-
-(defn brep-surface-circle
-  [a b c]
-  (let [cp (center-from-pts a b c)
-        c1 (brep-curve-circle a b c)]
-    (fn [u v]
-      (let [c2 (brep-line cp (c1 u))]
-        (c2 v)))))
-
-(defn circle
-  [r]
-  {:history `(circle ~r)
-   :frep (frep-circle r)
-   :vertices [#_[0 0 0] [r 0 0] [0 r 0] [(- r) 0 0] [0 (- r) 0]]
-   :curves [(brep-curve-circle [r 0 0] [0 r 0] [(- r) 0 0])]
-   :surfaces [(brep-surface-circle [r 0 0] [0 r 0] [(- r) 0 0])]})
-
-(defn brep-curve-ellipse
-  [rx ry]
-  (fn [t]
-    (let [t (* 2 Math/PI t)
-          x (* rx (Math/cos t))
-          y (* ry (Math/sin t))]
-      [x y])))
-
-(defn old-arc
-  [a b c]
-  (let [cr (brep-curve-circle a b c)
-        c-param (estimate-parameter cr c 0.001)]
-    (fn [t]
-      (cond
-        (or (< t 0.0) (> t 1.0)) nil
-        (= (float t) 0.0) a
-        (= (float t) 1.0) c
-        :else
-        (let [t (* c-param t)]
-          (cr t))))))
-
-(defn brep-curve-arc
-  [a b c]
-  (let [f (brep-curve-circle a b c)
-        cp (center-from-pts a b c)
-        angle (angle-from-pts a cp c)]
-    (fn [t]
-      (let [t (* t (/ angle 360.0))]
-        (f t)))))
-
-;; this is not correct. ...-straight-sweep does
-;; not account for rotating based on path normal
-(defn brep-surface-arc
-  [a b c]
-  (let [cp (center-from-pts a b c)
-        c1 (brep-line cp a)
-        c2 (brep-curve-arc a b c)]
-    (fn [u v]
-      ((brep-curve-straight-sweep c1 c2) u v))))
-
-
-
-(defn frep-triangle
-  [a b c]
-  (fn [pt]
-    (let [[e0 e1 e2] (map #(apply v- %) [[b a] [c b] [a c]])
-          [v0 v1 v2] (map (partial v- pt) [a b c])
-          xf (fn [v e] 
-               (v- v (map * e (repeat (clamp (/ (dot* v e) (dot* e e)) 0 1)))))
-          [pq0 pq1 pq2] (map #(apply xf %) [[v0 e0] [v1 e1] [v2 e2]])
-          s (sign (- (* (first e0) (second e2)) (* (second e0) (first e2))))
-          d1 (min (dot* pq0 pq0)
-                  (dot* pq1 pq1)
-                  (dot* pq2 pq2))
-          d2 (min (* s (- (* (first v0) (second e0)) (* (second v0) (first e0))))
-                  (* s (- (* (first v1) (second e1)) (* (second v1) (first e1))))
-                  (* s (- (* (first v2) (second e2)) (* (second v2) (first e2)))))]
-      (* -1 (Math/sqrt d1) (sign d2)))))
-
-(defn brep-surface-triangle
-  [a b c]
-  (let [l1 (brep-line b a)
-        l2 (brep-line c a)]
-    (fn [u v]
-      (let [l3 (brep-line (l1 v) (l2 v))]
-        (l3 u)))))
-
-(declare brep-curve-polygon)
-
-(defn triangle
-  [a b c]
-  {:history `(triangle ~a ~b ~c)
-   :frep (frep-triangle a b c)
-   :vertices [a b c]
-   :curves (conj
-            (mapv brep-line [a b c] [b c a])
-            (brep-curve-polygon [a b c]))
-   :surfaces [(brep-surface-triangle a b c)]})
-
-(defn regular-polygon-pts
-  [r n]
-  (let [angle (* 2 Math/PI (/ 1 n))]
-    (for [step (range n)]
-      [(* r (Math/cos (* step angle)))
-       (* r (Math/sin (* step angle)))
-       0])))
-
-(defn frep-polygon
-  [paths]
-  (let [pts (apply concat paths) ;; temporary avoidance of path merge
-        tris (map
-              #(apply frep-triangle %)
-              (clip-ears pts)
-              (:triangles (clip-ears pts)))]
-    (reduce frep-union tris)))
-
-(defn brep-curve-polygon
-  [pts]
-  (brep-polyline (conj (vec pts) (first pts))))
-
-(defn brep-surface-polygon
-  [pts]
-  (let [xf (fn [pts] (mapv #(conj % 0) pts))
-        tris (mapv xf (:triangles (delaunay/triangulate pts)))]
-    (apply brep-surface-union (map #(apply brep-surface-triangle %) tris))))
-
-(defn polygon-old
-  [pts]
-  {:history `(polygon-old ~pts)
-   :frep (frep-polygon pts)
-   :vertices (vec pts)
-   :curves (mapv 
-            #(apply brep-line %) 
-            (partition 2 1 (conj (vec pts) (first pts))))
-   :surfaces [(brep-surface-polygon pts)]})
-
-(defn close-path
-  [path]
-  (conj (vec path) (first path)))
-
-(defn path->brep-lines
-  [path]
-  (mapv #(apply brep-line %) (partition 2 1 path)))
-
-(defn polygon
-  [& paths]
-  (let [paths (mapv vec paths)]
-    {:history `(polygon ~@paths)
-     :frep nil #_(frep-polygon paths)
-     :vertices (apply concat paths)
-     :curves (vec (mapcat (comp path->brep-lines close-path) paths))
-     :surfaces (mapv brep-surface-polygon paths)}))
-
-(defn frep-sphere [r]
-  (fn [pt]
-    (let [[x y z] pt]
-      (+ (sq x) (sq y) (sq z) (- (sq r))))))
-
-(defn brep-sphere
-  [r]
-  (fn [u v]
-    (let [[u v] (map #(* 2 Math/PI %) [u v])
-          x (* r (Math/sin u) (Math/cos v))
-          y (* r (Math/sin u) (Math/sin v))
-          z (* r (Math/cos u))]
-      [x y z])))
-
-(defn brep-surface-torus
-  [R r]
-  (fn [u v]
-    (let [[u v] (map #(* 2 Math/PI %) [u v])
-          x (* (+ R (* r (Math/cos u))) (Math/cos v))
-          y (* (+ R (* r (Math/cos u))) (Math/sin v))
-          z (* r (Math/sin u))]
-      [x y z])))
-
-(defn frep-cylinder [r h]
-  (fn [pt]
-    (let [[x y z] pt]
-      (max (- (Math/sqrt (+ (sq x) (sq y))) r)
-           (- z h) (- (- h) z)))))
-
-(defn brep-surface-cylinder
-  [r h]
-  (fn [u v]
-    (let [u (* 2 Math/PI u)
-          v (* h v)
-          x (* r (Math/cos u))
-          y (* r (Math/sin u))
-          z v]
-      [x y z])))
-
-(defn frep-box [l w h]
-  (fn [pt]
-    (let [[x y z] pt]
-      (max (- x l) (- (- l) x)
-           (- y w) (- (- w) y)
-           (- z h) (- (- h) z)))))
+            [same :refer [ish? zeroish?]]))
 
 (defn nearly?
   "compare two float values for approximate equality.
@@ -1170,3 +697,473 @@
         oedges (every-other (cycle-pairs opts))
         edge-pairs (cycle-pairs oedges)]
     (wrap-list-once (map #(apply line-intersection %) edge-pairs))))
+
+(def sample-model
+  {:history "the quoted most recent fn call with eval'd args."
+   :frep "the single FREP function which produces the shape"
+   :ref "list of reference elements like center points and lines"
+   :vertices "list of vertices, excluding ref elements"
+   :curves "list of parametric curve functions"
+   :surfaces "list of parametric surface functions"
+   :volumes "list of volume functions"})
+
+(defn frep-union [f g]
+  (fn [pt]
+    (let [a (f pt)
+          b (g pt)]
+      (min a b))))
+
+(defn brep-curve-union
+  [& curves]
+  (let [n (count curves)
+        intervals (map #(vector % (inc %)) (range n))]
+    (fn [t]
+      (let [t (* n t)]
+        (cond
+          (= (float t) 0.0) ((first curves) 0)
+          (= (float t) (float n)) ((last curves) 1)
+          :else
+          (first
+           (filter 
+            some?
+            (map #(remap-within %1 %2 t) curves intervals))))))))
+
+(defn brep-surface-union
+  [& surfaces]
+  (let [n (count surfaces)
+        intervals (map #(vector % (inc %)) (range n))]
+    (fn [u v]
+      (let [partial-surfaces (map #(partial % u) surfaces)]
+        ((apply brep-curve-union partial-surfaces) v)))))
+
+(defn union
+  [shape1 shape2]
+  (let [s1 (dissoc shape1 :frep :history)
+        s2 (dissoc shape2 :frep :history)]
+    (merge
+     (merge-with (comp vec concat) s1 s2)
+     {:frep (frep-union (:frep shape1) (:frep shape2))
+      :history [`(union ~shape1 ~shape2)]})))
+
+
+
+(defn frep-difference [f g]
+  (fn [pt]
+    (let [a (f pt)
+          b (* -1 (g pt))]
+      (max a b))))
+
+(defn frep-intersection [f g]
+  (fn [pt]
+    (let [a (f pt)
+          b (g pt)]
+      (max a b))))
+
+(defn frep-translate
+  [f pos]
+  (fn [pt]
+    (f (v+ pt pos))))
+
+(defn brep-translate
+  [f pos]
+  (comp #(v+ pos %) f))
+
+(defn translate
+  [shape pos]
+  (merge
+   shape
+   {:history (conj (:history shape) `(translate ~shape ~pos))
+    :frep (frep-translate (:frep shape) pos)
+    :vertices (mapv (partial v+ pos) (:vertices shape))
+    :curves (mapv #(brep-translate % pos) (:curves shape))
+    :surfaces (mapv #(brep-translate % pos) (:surfaces shape))
+    :volumes (mapv #(brep-translate % pos) (:volumes shape))}))
+
+(defn sin-cos-pair [theta]
+  [(Math/sin (to-rad theta)) (Math/cos (to-rad theta))])
+
+(defn rot-pt-2d
+  [[x y] theta]
+  (let [[s-t c-t] (sin-cos-pair theta)]
+    [(- (* x c-t) (* y s-t))
+     (+ (* y c-t) (* x s-t))]))
+
+;; this rotates a point around [0,0,0]
+(defn rot-pt
+  [[x y z] axis theta]
+  (cond
+    (= axis :x) (into [x] (rot-pt-2d [y z] theta))
+    (= axis :y) (apply #(into [] [%2 y %1]) (rot-pt-2d [z x] theta))
+    (= axis :z) (into (rot-pt-2d [x y] theta) [z])))
+
+(defn rotate-point
+  [pt [ax ay az]]
+  (let [pt (if (< (count pt) 3)
+             (conj pt 0)
+             pt)]
+    (-> pt
+        (rot-pt :z az)
+        (rot-pt :y ay)
+        (rot-pt :x ax))))
+
+(defn brep-rotate
+  [f angles]
+  (comp #(rotate-point % angles) f))
+
+(defn frep-rotate
+  [f angles]
+  (fn [pt]
+    (f (rotate-point pt angles))))
+
+(defn rotate
+  [shape angles]
+  (merge
+   shape
+   {:history (conj (:history shape) `(rotate ~shape ~angles))
+    :frep (frep-rotate (:frep shape) angles)
+    :vertices (mapv #(rotate-point % angles) (:vertices shape))
+    :curves (mapv #(brep-rotate % angles) (:curves shape))
+    :surfaces (mapv #(brep-rotate % angles) (:surfaces shape))
+    :volumes (mapv #(brep-rotate % angles) (:volumes shape))}))
+
+(defn frep-scale
+  [f scales]
+  (fn [pt]
+    (f (v* pt scales))))
+
+(defn brep-scale
+  [f scales]
+  (comp #(v* scales %) f))
+
+(defn scale
+  [shape scales]
+  (merge
+   shape
+   {:history (conj (:history shape) `(scale ~shape ~scales))
+    :frep (frep-scale (:frep shape) scales)
+    :vertices (mapv (partial v* scales) (:vertices shape))
+    :curves (mapv #(brep-scale % scales) (:curves shape))
+    :surfaces (mapv #(brep-scale % scales) (:surfaces shape))
+    :volumes (mapv #(brep-scale % scales) (:volumes shape))}))
+
+(defn frep-extrude
+  [f h]
+  (fn [pt]
+    (let [d (f (drop-last pt))
+          w [d (- (Math/abs (last pt)) h)]]
+      (+ (min (apply max w) 0)
+         (distance [0 0]
+                   [(max (first w) 0) (max (second w) 0)])))))
+
+(declare brep-line)
+(defn brep-curve-extrude
+  [c h]
+  (fn [u v]
+    (let [c2 (brep-line (c u) (v+ (c u) [0 0 h]))]
+      (c2 v))))
+
+(defn brep-surface-extrude
+  [s h]
+  (fn [u v w]
+    (let [c1 (brep-line (s u v) (v+ (s u v) [0 0 h]))]
+      c1 v)))
+
+(defn extrude
+  [shape h]
+  (let [vertices (mapv (partial v+ [0 0 h]) (:vertices shape))]
+    (merge
+     (merge-with
+      (comp vec concat)
+      shape
+      {:vertices vertices
+       :curves (concat
+                (mapv #(brep-translate % [0 0 h]) (:curves shape))
+                (mapv #(brep-line %1 %2) (:vertices shape) vertices))
+       :surfaces (concat
+                  [(brep-translate (first (:surfaces shape)) [0 0 h])]
+                  (mapv #(brep-curve-extrude % h) (:curves shape)))
+       :volumes [(brep-surface-extrude (first (:surfaces shape)) h)]})
+     {:history `(extrude ~shape ~h)
+      :frep (frep-extrude (:frep shape) h)})))
+
+(defn brep-curve-straight-sweep
+  [c1 c2]
+  (fn [u v]
+    (v+ (c1 u) (c2 v))))
+
+(defn brep-surface-straight-sweep
+  [s c]
+  (fn [u v w]
+    (v+ (s u v) (c w))))
+
+(defn frep-revolve
+  [f r]
+  (fn [pt]
+    (let [q [(- (distance [0 0] [(first pt) (last pt)]) r) 
+             (second pt)]]
+      (f q))))
+
+(defn vertex
+  [[x y z]]
+  {:history `(vertex [~x ~y ~z])
+   :frep (fn [pt]
+           (distance [x y z] pt))
+   :vertices [[x y z]]})
+
+(defn frep-line
+  [a b]
+  (fn [pt]
+    (let [pa (map - pt a)
+          ba (map - b a)
+          h (clamp (/ (dot* pa ba) (dot* ba ba)) 0 1)]
+      (distance (map - pa (map * ba (repeat h))) [0 0 0]))))
+
+(defn brep-line
+  [a b]
+  (fn [t]
+    (cond
+      (= t :tag) :line
+      (= (float t) 0.0) a
+      (= (float t) 1.0) b
+      :else
+      (v+ a (v* (v- b a) (repeat t))))))
+
+(defn line
+  [a b]
+  {:history `(line ~a ~b)
+   :frep (frep-line a b)
+   :vertices [a b]
+   :curves [(brep-line a b)]})
+
+(defn brep-polyline
+  [pts]
+  (let [step (/ 1.0 (dec (count pts)))
+        intervals (partition 2 1 (range 0 (+ 1 step) step))
+        lines (map (partial apply brep-line) (partition 2 1 pts))]
+    (fn [t]
+      (cond 
+        (= t :tag) :polyline
+        (= (float t) 0.0) (first pts)
+        (= (float t) 1.0) (last pts)
+        :else
+        (first (filter some?
+                       (map #(remap-within %1 %2 t) lines intervals)))))))
+
+(defn frep-circle
+  [r]
+  (fn [pt]
+    (- (distance pt [0 0 0]) r)))
+
+;;https://mathforum.org/library/drmath/view/63755.html
+(defn brep-curve-circle
+  [a b c]
+  (let [n (normalize (normal a b c))
+        r (radius-from-pts a b c)
+        cp (center-from-pts a b c)
+        u (normalize (mapv - a cp))
+        v (cross* n u)]
+    (fn [t]
+      (cond
+        (= t :tag) :circle
+        (or (< t 0.0) (> t 1.0)) nil
+        (= (float t) 0.0) a
+        (= (float t) 1.0) a
+        :else
+        (let [t (* 2 Math/PI t)]
+          (v+ cp
+              (v* (repeat (* r (Math/cos t))) u)
+              (v* (repeat (* r (Math/sin t))) v)))))))
+
+(defn brep-surface-circle
+  [a b c]
+  (let [cp (center-from-pts a b c)
+        c1 (brep-curve-circle a b c)]
+    (fn [u v]
+      (let [c2 (brep-line cp (c1 u))]
+        (c2 v)))))
+
+(defn circle
+  [r]
+  {:history `(circle ~r)
+   :frep (frep-circle r)
+   :vertices [#_[0 0 0] [r 0 0] [0 r 0] [(- r) 0 0] [0 (- r) 0]]
+   :curves [(brep-curve-circle [r 0 0] [0 r 0] [(- r) 0 0])]
+   :surfaces [(brep-surface-circle [r 0 0] [0 r 0] [(- r) 0 0])]})
+
+(defn brep-curve-ellipse
+  [rx ry]
+  (fn [t]
+    (let [t (* 2 Math/PI t)
+          x (* rx (Math/cos t))
+          y (* ry (Math/sin t))]
+      [x y])))
+
+(defn old-arc
+  [a b c]
+  (let [cr (brep-curve-circle a b c)
+        c-param (estimate-parameter cr c 0.001)]
+    (fn [t]
+      (cond
+        (or (< t 0.0) (> t 1.0)) nil
+        (= (float t) 0.0) a
+        (= (float t) 1.0) c
+        :else
+        (let [t (* c-param t)]
+          (cr t))))))
+
+(defn brep-curve-arc
+  [a b c]
+  (let [f (brep-curve-circle a b c)
+        cp (center-from-pts a b c)
+        angle (angle-from-pts a cp c)]
+    (fn [t]
+      (let [t (* t (/ angle 360.0))]
+        (f t)))))
+
+;; this is not correct. ...-straight-sweep does
+;; not account for rotating based on path normal
+(defn brep-surface-arc
+  [a b c]
+  (let [cp (center-from-pts a b c)
+        c1 (brep-line cp a)
+        c2 (brep-curve-arc a b c)]
+    (fn [u v]
+      ((brep-curve-straight-sweep c1 c2) u v))))
+
+
+
+(defn frep-triangle
+  [a b c]
+  (fn [pt]
+    (let [[e0 e1 e2] (map #(apply v- %) [[b a] [c b] [a c]])
+          [v0 v1 v2] (map (partial v- pt) [a b c])
+          xf (fn [v e] 
+               (v- v (map * e (repeat (clamp (/ (dot* v e) (dot* e e)) 0 1)))))
+          [pq0 pq1 pq2] (map #(apply xf %) [[v0 e0] [v1 e1] [v2 e2]])
+          s (sign (- (* (first e0) (second e2)) (* (second e0) (first e2))))
+          d1 (min (dot* pq0 pq0)
+                  (dot* pq1 pq1)
+                  (dot* pq2 pq2))
+          d2 (min (* s (- (* (first v0) (second e0)) (* (second v0) (first e0))))
+                  (* s (- (* (first v1) (second e1)) (* (second v1) (first e1))))
+                  (* s (- (* (first v2) (second e2)) (* (second v2) (first e2)))))]
+      (* -1 (Math/sqrt d1) (sign d2)))))
+
+(defn brep-surface-triangle
+  [a b c]
+  (let [l1 (brep-line b a)
+        l2 (brep-line c a)]
+    (fn [u v]
+      (let [l3 (brep-line (l1 v) (l2 v))]
+        (l3 u)))))
+
+(declare brep-curve-polygon)
+
+(defn triangle
+  [a b c]
+  {:history `(triangle ~a ~b ~c)
+   :frep (frep-triangle a b c)
+   :vertices [a b c]
+   :curves (conj
+            (mapv brep-line [a b c] [b c a])
+            (brep-curve-polygon [a b c]))
+   :surfaces [(brep-surface-triangle a b c)]})
+
+(defn regular-polygon-pts
+  [r n]
+  (let [angle (* 2 Math/PI (/ 1 n))]
+    (for [step (range n)]
+      [(* r (Math/cos (* step angle)))
+       (* r (Math/sin (* step angle)))])))
+
+(defn frep-polygon
+  [paths]
+  (let [pts (apply concat paths) ;; temporary avoidance of path merge
+        tris (map
+              #(apply frep-triangle %)
+              (clip-ears pts)
+              (:triangles (clip-ears pts)))]
+    (reduce frep-union tris)))
+
+(defn brep-curve-polygon
+  [pts]
+  (brep-polyline (conj (vec pts) (first pts))))
+
+(defn brep-surface-polygon
+  [pts]
+  (let [xf (fn [pts] (mapv #(conj % 0) pts))
+        tris (mapv xf (:triangles (delaunay/triangulate pts)))]
+    (apply brep-surface-union (map #(apply brep-surface-triangle %) tris))))
+
+(defn polygon-old
+  [pts]
+  {:history `(polygon-old ~pts)
+   :frep (frep-polygon pts)
+   :vertices (vec pts)
+   :curves (mapv 
+            #(apply brep-line %) 
+            (partition 2 1 (conj (vec pts) (first pts))))
+   :surfaces [(brep-surface-polygon pts)]})
+
+(defn close-path
+  [path]
+  (conj (vec path) (first path)))
+
+(defn path->brep-lines
+  [path]
+  (mapv #(apply brep-line %) (partition 2 1 path)))
+
+(defn polygon
+  [& paths]
+  (let [paths (mapv vec paths)]
+    {:history `(polygon ~@paths)
+     :frep nil #_(frep-polygon paths)
+     :vertices (apply concat paths)
+     :curves (vec (mapcat (comp path->brep-lines close-path) paths))
+     :surfaces (mapv brep-surface-polygon paths)}))
+
+(defn frep-sphere [r]
+  (fn [pt]
+    (let [[x y z] pt]
+      (+ (sq x) (sq y) (sq z) (- (sq r))))))
+
+(defn brep-sphere
+  [r]
+  (fn [u v]
+    (let [[u v] (map #(* 2 Math/PI %) [u v])
+          x (* r (Math/sin u) (Math/cos v))
+          y (* r (Math/sin u) (Math/sin v))
+          z (* r (Math/cos u))]
+      [x y z])))
+
+(defn brep-surface-torus
+  [R r]
+  (fn [u v]
+    (let [[u v] (map #(* 2 Math/PI %) [u v])
+          x (* (+ R (* r (Math/cos u))) (Math/cos v))
+          y (* (+ R (* r (Math/cos u))) (Math/sin v))
+          z (* r (Math/sin u))]
+      [x y z])))
+
+(defn frep-cylinder [r h]
+  (fn [pt]
+    (let [[x y z] pt]
+      (max (- (Math/sqrt (+ (sq x) (sq y))) r)
+           (- z h) (- (- h) z)))))
+
+(defn brep-surface-cylinder
+  [r h]
+  (fn [u v]
+    (let [u (* 2 Math/PI u)
+          v (* h v)
+          x (* r (Math/cos u))
+          y (* r (Math/sin u))
+          z v]
+      [x y z])))
+
+(defn frep-box [l w h]
+  (fn [pt]
+    (let [[x y z] pt]
+      (max (- x l) (- (- l) x)
+           (- y w) (- (- w) y)
+           (- z h) (- (- h) z)))))

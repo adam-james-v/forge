@@ -1,118 +1,183 @@
 (ns forge.model
-  (:require [clojure.walk :refer [postwalk]]))
+  (:require [clojure.walk :refer [postwalk]]
+            [forge.proto :as f]))
 
 (def pi Math/PI)
 (def tau (* 2 pi))
 
 (defn rect
   [x y]
-  [:rect {:x x :y y}])
+  [:rect {:origin [0 0 0]
+          :lcs {:lx [1 0 0]
+                :ly [0 1 0]
+                :lz [0 0 1]}
+          :x x :y y :center true}])
 
 (defn circle
   [r]
-  [:circle {:r r}])
+  [:circle {:origin [0 0 0]
+            :lcs {:lx [1 0 0]
+                  :ly [0 1 0]
+                  :lz [0 0 1]}
+            :r r}])
 
 (defn polygon
   ([pts]
-   [:polygon {:pts pts}])
+   [:polygon {:origin [0 0 0]
+              :lcs {:lx [1 0 0]
+                    :ly [0 1 0]
+                    :lz [0 0 1]}
+              :pts (vec pts) :paths [(vec (range (count pts)))]}])
   ([pts paths]
-   [:polygon {:pts pts :paths paths}]))
+   [:polygon {:origin [0 0 0]
+              :lcs {:lx [1 0 0]
+                    :ly [0 1 0]
+                    :lz [0 0 1]}
+              :pts (vec pts) :paths paths}]))
 
 (defn project
-  [cut & block]
-  [:project {:cut cut} block])
+  [block cut]
+  [:project {:origin [0 0 0]
+             :lcs {:lx [1 0 0]
+                   :ly [0 1 0]
+                   :lz [0 0 1]}
+             :cut cut} block])
 
 (defn sphere
   [r]
-  [:sphere {:r r}])
+  [:sphere {:origin [0 0 0]
+            :lcs {:lx [1 0 0]
+                  :ly [0 1 0]
+                  :lz [0 0 1]}
+            :r r}])
 
 (defn box
   [x y z]
-  [:box {:x x :y y :z z}])
+  [:box {:origin [0 0 0]
+         :lcs {:lx [1 0 0]
+               :ly [0 1 0]
+               :lz [0 0 1]}
+         :x x :y y :z z :center true}])
 
 (defn cylinder
   ([r h]
-   [:cylinder {:r r :h h}])
+   [:cylinder {:origin [0 0 0]
+               :lcs {:lx [1 0 0]
+                     :ly [0 1 0]
+                     :lz [0 0 1]}
+               :r r :h h :center true}])
   ([r1 r2 h]
-   [:cylinder {:r1 r1 :r2 r2 :h h}]))
+   [:cylinder {:origin [0 0 0]
+               :lcs {:lx [1 0 0]
+                     :ly [0 1 0]
+                     :lz [0 0 1]}
+               :r1 r1 :r2 r2 :h h :center true}]))
 
 (defn polyhedron
   [pts faces]
-  [:polyhedron {:pts pts :faces faces}])
+  [:polyhedron {:origin [0 0 0]
+                :lcs {:lx [1 0 0]
+                      :ly [0 1 0]
+                      :lz [0 0 1]}
+                :pts pts :faces faces}])
 
 (defn extrude
-  [{:keys [height twist convexity center slices scale] :as opts} & block]
-  [:extrude opts block])
+  [block {:keys [height twist convexity center slices scale] :as opts}]
+  [:extrude (merge {:origin [0 0 0]
+                    :lcs {:lx [1 0 0]
+                          :ly [0 1 0]
+                          :lz [0 0 1]}}
+                   opts) block])
 
 (defn revolve
-  [{:keys [convexity angle] :as opts} & block]
-  [:revolve {:convexity convexity
-             :angle angle} block])
+  [block {:keys [convexity angle] :as opts}]
+  [:revolve (merge {:origin [0 0 0]
+                    :lcs {:lx [1 0 0]
+                          :ly [0 1 0]
+                          :lz [0 0 1]}}
+                   opts) block])
 
-(defn group
-  [& block]
-  [:group block])
+(defn union
+  [& elems]
+  [:union {} elems])
 
-(defn resize
-  [[x y z] & block]
-  [:resize {:x x :y y :z z} block])
+(defn intersection
+  [& elems]
+  [:intersection {} elems])
+
+(defn difference
+  [& elems]
+  [:difference {} elems])
 
 (defn translate
-  [[x y z] & block]
-  [:translate {:x x :y y :z z} block])
+  [block [x y z]]
+  (let [[tag {:keys [origin] :as props} content] block
+        xf-props (-> props
+                     (assoc :origin (f/v+ origin [x y z]))
+                     (assoc :translation [x y z]))]
+    [:translate {:xf-elem (vec (filter some? [tag xf-props content]))
+                 :translation [x y z]
+                 :x x :y y :z z} block]))
 
-(defn rotatev
-  [a [x y z] block]
-  [:rotatev {:a a :x x :y y :z z} block])
-
-(defn rotatec
-  [[x y z] block]
-  [:rotatec {:x x :y y :z z} block])
+(defn- rotate-lcs
+  [lcs [x y z]]
+  (let [[keys vals] ((juxt keys vals) lcs)]
+    (zipmap keys (map #(f/rotate-point % [x y z]) vals))))
 
 (defn rotate
-  [& block]
-  (if (number? (first block))
-    (rotatev (first block) (second block) (drop 2 block))
-    (rotatec (first block) (rest block))))
+  ([block [x y z]]
+   (let [[tag {:keys [lcs] :as props} content] block
+         xf-props (-> props 
+                      (assoc :lcs (rotate-lcs lcs [x y z]))
+                      (assoc :rotation [x y z]))]
+     [:rotate {:xf-elem (vec (filter some? [tag xf-props content]))
+               :rotation [x y z]
+               :x x :y y :z z} block]))
+  
+  ([block a [x y z]]
+   [:rotate {:a a :x x :y y :z z} block]))
+
+(defn group
+  [& content]
+  (if (and (= 1 (count content))
+           (not (keyword? (first (first content)))))
+    ;; content is a list of a list of elements
+    (into [:group {}] (first content))
+    ;; content is a single element OR a list of elements
+    (into [:group {}] (filter (complement nil?) content))))
+
+(defn resize
+  [block [x y z]]
+  [:resize {:x x :y y :z z} block])
 
 (defn scale
-  [[x y z] & block]
+  [block [x y z]]
   [:scale {:x x :y y :z z} block])
 
 (defn mirror
-  [[x y z] & block]
+  [block [x y z]]
   [:mirror {:x x :y y :z z} block])
 
 (defn color
-  [[r g b a] & block]
+  [block [r g b a]]
   [:color {:r r :g g :b b :a a} block])
 
 (defn hull
-  [& block]
+  [block]
   [:hull {} block])
 
 (defn offset
-  [opts & block]
+  [block opts]
   (if (number? opts)
     [:offset {:r opts} block]
     [:offset opts block]))
 
 (defn minkowski
-  [& block]
+  [block]
   [:minkowski {} block])
 
 (defn multmatrix
-  [m & block]
-  [:multmatrix {:m m} block])
+  [block mtx]
+  [:multmatrix {:mtx mtx} block])
 
-(defn union
-  [& forms]
-  [:union {} forms])
 
-(defn intersection
-  [& forms]
-  [:intersection {} forms])
-
-(defn difference
-  [& forms]
-  [:difference {} forms])
