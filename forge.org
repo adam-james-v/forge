@@ -1821,17 +1821,9 @@ The namespace declaration.
   [pts faces]
   [:polyhedron {:pts pts :faces faces}])
 
-#_(defn extrude
-  [elem {:keys [height twist convexity center slices scale] :as opts}]
-  [:extrude opts elem])
-
 (defn extrude
   [elem h]
   [:extrude {:h h} elem])
-
-#_(defn revolve
-  [elem {:keys [convexity angle] :as opts}]
-  [:revolve opts elem])
 
 (defn revolve
   [elem a]
@@ -1960,6 +1952,39 @@ keys:
 
 
 #+begin_src clojure :tangle ./src/forge/model.cljc
+;; multimethod
+(defmulti fig
+  (fn [element]
+    (if (keyword? (first element)) (first element) :list)))
+
+(defmethod fig :list
+  [[& elems]]
+  (map fig elems))
+
+(defmethod fig :pt [[_ {:keys [] :as props}]])
+(defmethod fig :line [[_ {:keys [] :as props}]])
+(defmethod fig :polyline [[_ {:keys [] :as props}]])
+(defmethod fig :rect [[_ {:keys [] :as props}]])
+(defmethod fig :circle [[_ {:keys [] :as props}]])
+(defmethod fig :polygon [[_ {:keys [] :as props}]])
+(defmethod fig :project [[_ {:keys [] :as props}]])
+
+(defmethod fig :sphere [[_ {:keys [] :as props}]])
+(defmethod fig :box [[_ {:keys [] :as props}]])
+(defmethod fig :cylinder [[_ {:keys [] :as props}]])
+(defmethod fig :polyhedron [[_ {:keys [] :as props}]])
+(defmethod fig :extrude [[_ {:keys [] :as props}]])
+(defmethod fig :revolve [[_ {:keys [] :as props}]])
+
+(defmethod fig :union [[_ {:keys [] :as props}]])
+(defmethod fig :intersection [[_ {:keys [] :as props}]])
+(defmethod fig :difference [[_ {:keys [] :as props}]])
+
+(defmethod fig :group [[_ {:keys [] :as props}]])
+(defmethod fig :translate [[_ {:keys [] :as props}]])
+(defmethod fig :rotate [[_ {:keys [] :as props}]])
+(defmethod fig :scale [[_ {:keys [] :as props}]])
+
 #+end_src
 
 * importers
