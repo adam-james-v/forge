@@ -861,12 +861,15 @@ HUGE NOTE: The nearly function needs serious checking. It will be necessary to w
   (= (into #{} pga)
      (into #{} pgb)))
 
-(declare close-path)
+(defn- close-pts
+  [pts]
+  (vec (take (inc (count pts)) (cycle pts))))
+
 (defn polygon-intersection
   [pga pgb]
   (when (not (identical-polygons? pga pgb))
-    (let [lines-a (partition 2 1 (close-path pga))
-          lines-b (partition 2 1 (close-path pgb))
+    (let [lines-a (partition 2 1 (close-pts pga))
+          lines-b (partition 2 1 (close-pts pgb))
           s (for [la lines-a
                   lb lines-b]
               (line-segment-intersection la lb))]
@@ -1315,6 +1318,8 @@ This is (for now) a copy from:
   (:require [forge.utils :as utils]
             [forge.geom :as geom]
             [forge.delaunay :as delaunay]
+            [svg-clj.elements :as svg]
+            [svg-clj.transforms :as tf]
             [clojure.string :as str]
             [same :refer [ish? zeroish?]]))
 
@@ -1350,24 +1355,37 @@ This is (for now) a copy from:
 
 #+END_SRC
 
+** pt
+#+BEGIN_SRC clojure :tangle ./src/forge/frep.cljc
+(defn pt
+  ([x y]
+   (fn [pt]
+     (utils/distance [x y] pt)))
+  ([x y z]
+   (fn [pt]
+     (utils/distance [x y z] pt))))
+
+#+END_SRC
+
 ** line
 #+BEGIN_SRC clojure :tangle ./src/forge/frep.cljc
 (defn line
   [a b]
   (fn [pt]
-    (let [pa (map - pt a)
-          ba (map - b a)
+    (let [pa (utils/v- pt a)
+          ba (utils/v- b a)
           h (utils/clamp (/ (utils/dot* pa ba) (utils/dot* ba ba)) 0 1)]
-      (utils/distance (map - pa (map * ba (repeat h))) [0 0 0]))))
+      (utils/distance (utils/v- pa (utils/v* ba (repeat h))) [0 0 0]))))
 
 #+END_SRC
 
-** circle
+** polyline
 #+BEGIN_SRC clojure :tangle ./src/forge/frep.cljc
-(defn circle
-  [r]
-  (fn [pt]
-    (- (utils/distance pt [0 0 0]) r)))
+(defn polyline
+  [pts]
+  (let [lines (->> (partition 2 1 pts)
+                   (map #(apply line %)))]
+    (reduce union lines)))
 
 #+END_SRC
 
@@ -1394,6 +1412,28 @@ This is (for now) a copy from:
 
 #+END_SRC
 
+** rect
+#+BEGIN_SRC clojure :tangle ./src/forge/frep.cljc
+(defn rect
+  [l w]
+  (let [b [(/ l 2.0) (/ w 2.0)]]
+    (fn [pt]
+      (let [abs-pt (mapv #(Math/abs %) pt)  
+            d (utils/v- abs-pt b)]
+        (+ (utils/distance (mapv #(max % 0) d) (repeat 0))
+           (min (apply max d) 0))))))
+
+#+END_SRC
+
+** circle
+#+BEGIN_SRC clojure :tangle ./src/forge/frep.cljc
+(defn circle
+  [r]
+  (fn [pt]
+    (- (utils/distance pt (repeat 0)) r)))
+
+#+END_SRC
+
 ** polygon
 My frep-polygon uses a triangulation/union approach. This did break for me in some cases, so I am going to test an alternate implementation. I will port this code:
 
@@ -1410,13 +1450,10 @@ As well, any polygon union should effectively produce the same polygon that woul
 
 #+BEGIN_SRC clojure :tangle ./src/forge/frep.cljc
 (defn polygon
-  [paths]
-  (let [pts (apply concat paths) ;; temporary avoidance of path merge
-        tris (map
-              #(apply triangle %)
-              (geom/clip-ears pts)
-              (:triangles (geom/clip-ears pts)))]
+  [pts]
+  (let [tris (map #(apply triangle %) (geom/clip-ears pts))] 
     (reduce union tris)))
+
 
 #+END_SRC
 
@@ -1435,7 +1472,7 @@ As well, any polygon union should effectively produce the same polygon that woul
   (fn [pt]
     (let [[x y z] pt]
       (max (- (Math/sqrt (+ (utils/sq x) (utils/sq y))) r)
-           (- z h) (- (- h) z)))))
+           (- z (/ h 2)) (- (/ h -2) z)))))
 
 #+END_SRC
 
@@ -1443,10 +1480,34 @@ As well, any polygon union should effectively produce the same polygon that woul
 #+BEGIN_SRC clojure :tangle ./src/forge/frep.cljc
 (defn box [l w h]
   (fn [pt]
-    (let [[x y z] pt]
-      (max (- x l) (- (- l) x)
-           (- y w) (- (- w) y)
-           (- z h) (- (- h) z)))))
+    (let [[x y z] pt
+          [lh wh hh] (map #(/ % 2) [l w h])]
+      (max (- x lh) (- (- lh) x)
+           (- y wh) (- (- wh) y)
+           (- z hh) (- (- hh) z)))))
+
+#+END_SRC
+
+** extrude
+#+BEGIN_SRC clojure :tangle ./src/forge/frep.cljc
+(defn extrude
+  [frep h]
+  (fn [pt]
+    (let [d (frep (drop-last pt))
+          w (- (Math/abs (- (last pt) (/ h 2))) (/ h 2))]
+      (+ (min (max d w) 0)
+         (utils/distance [0 0] [(max d 0) (max w 0)])))))
+
+#+END_SRC
+
+** revolve
+#+BEGIN_SRC clojure :tangle ./src/forge/frep.cljc
+(defn revolve
+  [f]
+  (fn [pt]
+    (let [q [(utils/distance [0 0] [(first pt) (second pt)])
+             (last pt)]]
+      (f q))))
 
 #+END_SRC
 
@@ -1477,30 +1538,82 @@ As well, any polygon union should effectively produce the same polygon that woul
 
 #+END_SRC
 
+** tools
+#+begin_src clojure :tangle ./src/forge/frep.cljc
+(defn cider-show
+  [frep]
+  (let [render
+        (filter 
+         some?
+         (for [x (range -200 201)
+               y (range -200 201)]
+           (let [r 5.0
+                 pt [x y]
+                 dist (frep pt)
+                 a (utils/round 
+                    (- 1 (/ (utils/clamp dist 0 r) r)) 3)]
+             (when (< (- r) dist r)
+               (-> (svg/rect 1 1)
+                   (tf/translate [0.5 0.5])
+                   (tf/translate pt)
+                   (tf/style {:fill (if (> dist 0)
+                                      "hotpink"
+                                      "skyblue")
+                              :opacity (if (< dist 0) 1 a)}))))))]
+    (when (not (empty? render))
+      (svg-clj.tools/cider-show render))))
 
-** extrude
-#+BEGIN_SRC clojure :tangle ./src/forge/frep.cljc
-(defn extrude
-  [f h]
+(def iso-euler-angles (map utils/to-rad [35.264 45 0]))
+(def origin-angle-adjust-a (map utils/to-rad [90 0 0]))
+(def origin-angle-adjust-b (map utils/to-rad [0 -90 0]))
+
+(defn isometric-xf
+  [frep]
+  (-> frep
+      (rotate origin-angle-adjust-a)
+      (rotate origin-angle-adjust-b)
+      (rotate iso-euler-angles)))
+
+(defn cider-show-3d
+  [frep]
+  (let [frep (isometric-xf frep)
+        render
+        (filter 
+         some?
+         (for [x (range -200 201 1)
+               y (range -200 201 1)
+               z (range -200 201 1)]
+             (let [r 0.5
+                   pt [x y z]
+                   dist (frep pt)
+                   a (utils/round 
+                      (- 1 (/ (utils/clamp dist 0 r) r)) 3)]
+               (when (< (- r) dist r)
+                 (-> (svg/rect 1 1)
+                     (tf/translate [0.5 0.5])
+                     (tf/translate (drop-last pt))
+                     (tf/style {:fill (if (> dist 0)
+                                        "hotpink"
+                                        "skyblue")
+                                :opacity (if (< dist 0) 1 a)}))))))]
+        (when (not (empty? render))
+          (svg-clj.tools/cider-show render))))
+
+(defn slice
+  [frep z]
   (fn [pt]
-    (let [d (f (drop-last pt))
-          w [d (- (Math/abs (last pt)) h)]]
-      (+ (min (apply max w) 0)
-         (utils/distance [0 0]
-                   [(max (first w) 0) (max (second w) 0)])))))
+    (frep (conj pt z))))
 
-#+END_SRC
+(def a (-> (utils/regular-polygon-pts 50 8)
+           (polygon)
+           (translate [200 0 0])
+           (revolve)))
 
-** revolve
-#+BEGIN_SRC clojure :tangle ./src/forge/frep.cljc
-(defn revolve
-  [f r]
-  (fn [pt]
-    (let [q [(- (utils/distance [0 0] [(first pt) (last pt)]) r) 
-             (second pt)]]
-      (f q))))
+(def b (-> (utils/regular-polygon-pts 50 8)
+           polygon
+           (extrude 100)))
 
-#+END_SRC
+#+end_src
 
 * brep
 ** ns
@@ -1755,7 +1868,9 @@ The namespace declaration.
 #+begin_src clojure :tangle ./src/forge/model.cljc
 (ns forge.model
   (:require [forge.utils :as utils]
-            [forge.geom :as geom]))
+            [forge.geom :as geom]
+            [forge.brep :as brep]
+            [forge.frep :as frep]))
 
 #+end_src
 
@@ -1795,9 +1910,9 @@ The namespace declaration.
   ([pts paths]
    [:polygon {:pts (vec pts) :paths paths}]))
 
-(defn project
-  [block cut]
-  [:project {:cut cut} block])
+(defn slice
+  [elem z]
+  [:slice {:z z} elem])
 
 #+end_src
 
@@ -1995,55 +2110,30 @@ Then, any number of file inputs can be used in the definition of an object.
 For example, 2D drawings can be produced as SVG and read into forge and manipulated using Forge geom tools. Then, you can directly reference them in model creation and output a model to whatever compiler target you wish.
 
 Likewise, you can also use native lang. files as modules in a design. So, if you have a multi file scad design, you can read each scad file in and trust that it is accurately represented with forge-model data and proceed as if it were built directly with forge.
-** scad
-coming soon. THe idea here is to have a .scad parser that emits a forge model tree structure. Thus, any scad file can be imported, modified, and exported as scad or any other model format.
-
-** svg
-NOT IMPLEMENTED YET.
-
-The idea here is to have svg string and/or svg hiccup data from the svg-clj library convert directly into usable 2D objects for further use in Forge code.
-
-Think of SVG elements as equivalent to forge 2d elements.
-
-*** ns
-#+begin_src clojure :tangle ./src/forge/import/svg.cljc
-(ns forge.import.svg
-  (:require [clojure.java.shell :refer [sh]]
-            [clojure.string :as str]
-            [clojure.data.xml :as xml]
-            [svg-clj.main :as svg]
-            [svg-clj.path :as path]
-            [svg-clj.utils :as utils]
-            [svg-clj.transforms :as tf]))
-
-#+end_src
-
-** scad-drawing
-NOT INTEGRATED AT ALL YET.
-
+** image
 This is just copy pasted from scad-drawing project. The intent here is to have a tool that takes a png filename and gives a set of points/paths which can be used as the basis for sketch elements, and used in Forge models as if native fns had created the points/paths.
 
 *** ns
-#+begin_src clojure :tangle ./src/forge/import/images.clj
-(ns forge.import.images
+#+begin_src clojure :tangle ./src/forge/import/image.clj
+(ns forge.import.image
   (:require [clojure.java.shell :refer [sh]]
             [clojure.string :as str]
             [clojure.data.xml :as xml]
-            [svg-clj.main :as svg]
+            [svg-clj.elements :as svg]
             [svg-clj.path :as path]
             [svg-clj.utils :as utils]
             [svg-clj.transforms :as tf]
-            [scad-clj.model :as scad]
-            [scad-clj.scad :refer [write-scad]]))
+            [forge.model :as mdl]
+            [forge.compile.scad :refer [write]]))
 
 #+end_src
 
-*** img->scad
+*** img->svg
 This part of the library has an external dependency on vtracer:
 
 [[https://github.com/visioncortex/vtracer]]
 
-#+begin_src clojure :tangle ./src/forge/import/images.clj
+#+begin_src clojure :tangle ./src/forge/import/image.clj
 (defn img->str [fname]
   "Ingest image file `fname` and transform it into a hiccup data structure."
   (let [new-fname (str (first (str/split fname #"\.")) ".svg")]
@@ -2094,52 +2184,26 @@ This part of the library has an external dependency on vtracer:
   (let [group (svg/g seq)
         ctr (mapv float (tf/centroid group))]
     (->> seq
-         (map #(tf/translate (utils/v* [-1 -1] ctr) %)))))
+         (map #(tf/translate % (utils/v* [-1 -1] ctr))))))
 
 #+end_src
 
-*** scad->svg
-#+begin_src clojure :tangle ./src/forge/import/images.clj
-(defn scad->svg
-  [scad-block]
-  (let [scad (write-scad [(scad/fn! 200) scad-block])
+*** mdl->svg
+#+begin_src clojure :tangle ./src/forge/import/image.clj
+(defn mdl->svg
+  [mdl]
+  (let [scad (str "$fn=200;\n" (write mdl))
         fname (str (gensym "tmp") ".svg")]
     (do (sh "openscad" "/dev/stdin" "-o" fname :in scad)
         (let [svg (slurp fname)]
           (do (sh "rm" fname)
-              (str->elements svg))))))
-
-#+end_src
-
-*** lines
-#+begin_src clojure :tangle ./src/forge/import/images.clj
-(defn line
-  [from to & {:keys [r]}]
-  (let [r (if r r 2)]
-    (scad/color 
-     [0 0 0 1]
-     (if (= from to)
-       (scad/sphere r)
-       (let [diff (map - to from)
-             norm (utils/distance from to)
-             rotate-angle (Math/acos (/ (last diff) norm))
-             rotate-axis [(- (nth diff 1)) (nth diff 0) 0]]
-         (scad/union
-          (scad/sphere r)
-          (scad/translate to (scad/sphere r))
-          (->> (scad/cylinder r norm)
-               (scad/translate [0 0 (/ norm 2)])
-               (scad/rotate rotate-angle rotate-axis)
-               (scad/translate from))))))))
-
-(defn polyline
-  [pts & {:keys [r]}]
-  (apply scad/union (map #(line (first %) (second %) :r r) (partition 2 1 pts))))
+              (rest 
+               (str->elements svg)))))))
 
 #+end_src
 
 *** utils
-#+begin_src clojure :tangle ./src/forge/import/images.clj
+#+begin_src clojure :tangle ./src/forge/import/image.clj
 (defn flip-y
   [pts]
   (map #(utils/v* % [1 -1]) pts))
@@ -2147,7 +2211,7 @@ This part of the library has an external dependency on vtracer:
 #+end_src
 
 *** drawing
-#+begin_src clojure :tangle ./src/forge/import/images.clj
+#+begin_src clojure :tangle ./src/forge/import/image.clj
 (defn line-drawing
   [fname & {:keys [r]}]
   (-> fname
@@ -2157,18 +2221,17 @@ This part of the library has an external dependency on vtracer:
       (->> (mapcat split-path))
       (->> (map path->pts))
       (->> (map flip-y))
-      (->> (map add-z))
-      (->> (map #(polyline % :r r)))
-      scad/union))
+      (->> (map #(mdl/polyline %)))
+      mdl/union))
 
-(defn svg-path-elem->scad-polygon
+(defn- svg-path-elem->polygon
   [path-elem]
   (-> path-elem
       split-path
       (->> (map path->pts))
       (->> (map flip-y))
-      (->> (map scad/polygon))
-      (->> (apply scad/difference))))
+      (->> (map mdl/polygon))
+      (->> (apply mdl/difference))))
 
 (defn drawing
   [fname]
@@ -2176,33 +2239,11 @@ This part of the library has an external dependency on vtracer:
       img->str
       str->elements
       re-center
-      (->> (map svg-path-elem->scad-polygon))
-      scad/union))
+      (->> (map svg-path-elem->polygon))
+      mdl/union))
 
 #+end_src
 
-*** primitives-wip
-#+begin_src clojure :tangle ./src/forge/import/images.clj
-(defn linecube
-  [x y z]
-  (scad/union
-   (scad/color [0 1 0 1] (scad/cube x y z))
-   (scad/translate [(/ x -2.0) (/ y -2.0) (/ z -2.0)]
-    (scad/union
-     (line [0 0 0] [x 0 0])
-     (line [x 0 0] [x y 0])
-     (line [x y 0] [0 y 0])
-     (line [0 y 0] [0 0 0])
-     (line [0 0 0] [0 0 z])
-     (line [x 0 0] [x 0 z])
-     (line [x y 0] [x y z])
-     (line [0 y 0] [0 y z])
-     (line [0 0 z] [x 0 z])
-     (line [x 0 z] [x y z])
-     (line [x y z] [0 y z])
-     (line [0 y z] [0 0 z])))))
-
-#+end_src
 * compilers
 A collection of methods for exporting models.
 
@@ -2224,7 +2265,8 @@ This is based off of Matthew Farrell's work on scad-clj. The code is modified in
 (ns forge.compile.scad
   (:require [clojure.java.shell :refer [sh]]
             [clojure.string :as str]
-            [forge.utils :as utils]))
+            [forge.utils :as utils]
+            [forge.model :as mdl]))
 
 #+end_src
 
@@ -2293,12 +2335,12 @@ This is based off of Matthew Farrell's work on scad-clj. The code is modified in
     ~@(when convexity [", convexity=" convexity])
     ");\n"))
 
-(defmethod write-expr :project
-  [depth [_ {:keys [cut]} & block]]
+(defmethod write-expr :slice
+  [depth [_ {:keys [z]} elem]]
   (concat
-   (list (indent depth) 
-         "projection (cut = " cut ") {\n")
-   (mapcat #(write-expr (inc depth) %1) block)
+   (list (indent depth)
+         "projection(cut=true){\n")
+   (write-expr (inc depth) (-> elem (mdl/translate [0 0 (- z)])))
    (list (indent depth) "}\n")))
 
 #+end_src
@@ -2454,10 +2496,10 @@ This is based off of Matthew Farrell's work on scad-clj. The code is modified in
 *** other-impl
 #+begin_src clojure :tangle ./src/forge/compile/scad.cljc
 (defmethod write-expr :color
-  [depth [_ [r g b a] elem]]
+  [depth [_ {:keys [r g b a]} elem]]
   (concat
     (list (indent depth) "color ([" r ", " g ", " b ", " a"]) {\n")
-    (write-block depth elem)
+    (write-expr depth elem)
     (list (indent depth) "}\n")))
 
 (defmethod write-expr :group 
@@ -2466,6 +2508,63 @@ This is based off of Matthew Farrell's work on scad-clj. The code is modified in
    (list (indent depth) "group() {\n")
    (mapcat #(write-expr (inc depth) %1) elem)
    (list (indent depth) "}\n")))
+
+#+end_src
+
+*** composites
+#+begin_src clojure :tangle ./src/forge/compile/scad.cljc
+(defn- scad-line
+  [a b & {:keys [r]}]
+  (let [r (if r r 2)
+        a (if (< (count a) 3) (forge.utils/add-z a) a)
+        b (if (< (count b) 3) (forge.utils/add-z b) b)]
+    (if (= a b)
+      (mdl/sphere r)
+      (let [[dx dy dz] (utils/v- a b)
+            norm (utils/distance b a)
+            rotate-angle (utils/to-deg (Math/acos (/ dz norm)))
+            rotate-axis [(- dy) dx 0]]
+        (-> (mdl/union
+             (mdl/sphere r)
+             (-> (mdl/sphere r) (mdl/translate a))
+             (-> (mdl/cylinder r norm)
+                 (mdl/translate [0 0 (/ norm 2)])
+                 (mdl/rotate rotate-angle rotate-axis)
+                 (mdl/translate b)))
+            (mdl/color [0 0 0 1]))))))
+
+(defn- scad-polyline
+  [pts & {:keys [r]}]
+  (apply mdl/union
+   (map #(scad-line (first %) (second %) :r r)
+        (partition 2 1 pts))))
+
+(defn- linecube
+  [x y z]
+  (mdl/union
+   (-> (mdl/box x y z) (mdl/color [0 1 0 1]))
+   (-> (mdl/union
+        (mdl/line [0 0 0] [x 0 0])
+        (mdl/line [x 0 0] [x y 0])
+        (mdl/line [x y 0] [0 y 0])
+        (mdl/line [0 y 0] [0 0 0])
+        (mdl/line [0 0 0] [0 0 z])
+        (mdl/line [x 0 0] [x 0 z])
+        (mdl/line [x y 0] [x y z])
+        (mdl/line [0 y 0] [0 y z])
+        (mdl/line [0 0 z] [x 0 z])
+        (mdl/line [x 0 z] [x y z])
+        (mdl/line [x y z] [0 y z])
+        (mdl/line [0 y z] [0 0 z]))
+       (mdl/translate [(/ x -2.0) (/ y -2.0) (/ z -2.0)]))))
+
+(defmethod write-expr :line
+  [depth [_ {:keys [a b]}]]
+  (write-expr depth (scad-line a b)))
+
+(defmethod write-expr :polyline
+  [depth [_ {:keys [pts]}]]
+  (write-expr depth (scad-polyline pts)))
 
 #+end_src
 
@@ -2481,7 +2580,7 @@ This is based off of Matthew Farrell's work on scad-clj. The code is modified in
 #?(:clj
    (defn png!
      [fname mdl-data]
-     (let [scad (write-scad [#_(fn! 20) mdl-data])]
+     (let [scad (write [#_(fn! 20) mdl-data])]
        (sh "openscad" "/dev/stdin"
            "--imgsize" "400,400"
            "--projection" "orthogonal"
@@ -2691,7 +2790,12 @@ A namespace for playing around with fns
 (def b (-> (mdl/circle 20)
            (mdl/translate [40 0 0])
            (mdl/revolve 360)))
-(scad/cider-show b)
+(def c (-> (mdl/polygon (utils/regular-polygon-pts 40 6))
+           (mdl/translate [40 0 0])
+           (mdl/revolve 360)))
+
+(scad/cider-show c)
 #_(spit "forge.scad" (scad/write plate))
+
 
 #+end_src

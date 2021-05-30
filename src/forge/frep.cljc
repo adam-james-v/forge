@@ -2,6 +2,8 @@
   (:require [forge.utils :as utils]
             [forge.geom :as geom]
             [forge.delaunay :as delaunay]
+            [svg-clj.elements :as svg]
+            [svg-clj.transforms :as tf]
             [clojure.string :as str]
             [same :refer [ish? zeroish?]]))
 
@@ -23,18 +25,27 @@
           b (g pt)]
       (max a b))))
 
+(defn pt
+  ([x y]
+   (fn [pt]
+     (utils/distance [x y] pt)))
+  ([x y z]
+   (fn [pt]
+     (utils/distance [x y z] pt))))
+
 (defn line
   [a b]
   (fn [pt]
-    (let [pa (map - pt a)
-          ba (map - b a)
+    (let [pa (utils/v- pt a)
+          ba (utils/v- b a)
           h (utils/clamp (/ (utils/dot* pa ba) (utils/dot* ba ba)) 0 1)]
-      (utils/distance (map - pa (map * ba (repeat h))) [0 0 0]))))
+      (utils/distance (utils/v- pa (utils/v* ba (repeat h))) [0 0 0]))))
 
-(defn circle
-  [r]
-  (fn [pt]
-    (- (utils/distance pt [0 0 0]) r)))
+(defn polyline
+  [pts]
+  (let [lines (->> (partition 2 1 pts)
+                   (map #(apply line %)))]
+    (reduce union lines)))
 
 (defn triangle
   [a b c]
@@ -53,13 +64,23 @@
                   (* s (- (* (first v2) (second e2)) (* (second v2) (first e2)))))]
       (* -1 (Math/sqrt d1) (utils/sign d2)))))
 
+(defn rect
+  [l w]
+  (let [b [(/ l 2.0) (/ w 2.0)]]
+    (fn [pt]
+      (let [abs-pt (mapv #(Math/abs %) pt)  
+            d (utils/v- abs-pt b)]
+        (+ (utils/distance (mapv #(max % 0) d) (repeat 0))
+           (min (apply max d) 0))))))
+
+(defn circle
+  [r]
+  (fn [pt]
+    (- (utils/distance pt (repeat 0)) r)))
+
 (defn polygon
-  [paths]
-  (let [pts (apply concat paths) ;; temporary avoidance of path merge
-        tris (map
-              #(apply triangle %)
-              (geom/clip-ears pts)
-              (:triangles (geom/clip-ears pts)))]
+  [pts]
+  (let [tris (map #(apply triangle %) (geom/clip-ears pts))] 
     (reduce union tris)))
 
 (defn sphere [r]
@@ -71,14 +92,30 @@
   (fn [pt]
     (let [[x y z] pt]
       (max (- (Math/sqrt (+ (utils/sq x) (utils/sq y))) r)
-           (- z h) (- (- h) z)))))
+           (- z (/ h 2)) (- (/ h -2) z)))))
 
 (defn box [l w h]
   (fn [pt]
-    (let [[x y z] pt]
-      (max (- x l) (- (- l) x)
-           (- y w) (- (- w) y)
-           (- z h) (- (- h) z)))))
+    (let [[x y z] pt
+          [lh wh hh] (map #(/ % 2) [l w h])]
+      (max (- x lh) (- (- lh) x)
+           (- y wh) (- (- wh) y)
+           (- z hh) (- (- hh) z)))))
+
+(defn extrude
+  [frep h]
+  (fn [pt]
+    (let [d (frep (drop-last pt))
+          w (- (Math/abs (- (last pt) (/ h 2))) (/ h 2))]
+      (+ (min (max d w) 0)
+         (utils/distance [0 0] [(max d 0) (max w 0)])))))
+
+(defn revolve
+  [f]
+  (fn [pt]
+    (let [q [(utils/distance [0 0] [(first pt) (second pt)])
+             (last pt)]]
+      (f q))))
 
 (defn translate
   [f pos]
@@ -95,18 +132,75 @@
   (fn [pt]
     (f (utils/v* pt scales))))
 
-(defn extrude
-  [f h]
-  (fn [pt]
-    (let [d (f (drop-last pt))
-          w [d (- (Math/abs (last pt)) h)]]
-      (+ (min (apply max w) 0)
-         (utils/distance [0 0]
-                   [(max (first w) 0) (max (second w) 0)])))))
+(defn cider-show
+  [frep]
+  (let [render
+        (filter 
+         some?
+         (for [x (range -200 201)
+               y (range -200 201)]
+           (let [r 5.0
+                 pt [x y]
+                 dist (frep pt)
+                 a (utils/round 
+                    (- 1 (/ (utils/clamp dist 0 r) r)) 3)]
+             (when (< (- r) dist r)
+               (-> (svg/rect 1 1)
+                   (tf/translate [0.5 0.5])
+                   (tf/translate pt)
+                   (tf/style {:fill (if (> dist 0)
+                                      "hotpink"
+                                      "skyblue")
+                              :opacity (if (< dist 0) 1 a)}))))))]
+    (when (not (empty? render))
+      (svg-clj.tools/cider-show render))))
 
-(defn revolve
-  [f r]
+(def iso-euler-angles (map utils/to-rad [35.264 45 0]))
+(def origin-angle-adjust-a (map utils/to-rad [90 0 0]))
+(def origin-angle-adjust-b (map utils/to-rad [0 -90 0]))
+
+(defn isometric-xf
+  [frep]
+  (-> frep
+      (rotate origin-angle-adjust-a)
+      (rotate origin-angle-adjust-b)
+      (rotate iso-euler-angles)))
+
+(defn cider-show-3d
+  [frep]
+  (let [frep (isometric-xf frep)
+        render
+        (filter 
+         some?
+         (for [x (range -200 201 1)
+               y (range -200 201 1)
+               z (range -200 201 1)]
+             (let [r 0.5
+                   pt [x y z]
+                   dist (frep pt)
+                   a (utils/round 
+                      (- 1 (/ (utils/clamp dist 0 r) r)) 3)]
+               (when (< (- r) dist r)
+                 (-> (svg/rect 1 1)
+                     (tf/translate [0.5 0.5])
+                     (tf/translate (drop-last pt))
+                     (tf/style {:fill (if (> dist 0)
+                                        "hotpink"
+                                        "skyblue")
+                                :opacity (if (< dist 0) 1 a)}))))))]
+        (when (not (empty? render))
+          (svg-clj.tools/cider-show render))))
+
+(defn slice
+  [frep z]
   (fn [pt]
-    (let [q [(- (utils/distance [0 0] [(first pt) (last pt)]) r) 
-             (second pt)]]
-      (f q))))
+    (frep (conj pt z))))
+
+(def a (-> (utils/regular-polygon-pts 50 8)
+           (polygon)
+           (translate [200 0 0])
+           (revolve)))
+
+(def b (-> (utils/regular-polygon-pts 50 8)
+           polygon
+           (extrude 100)))

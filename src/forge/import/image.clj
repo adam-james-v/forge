@@ -1,3 +1,14 @@
+(ns forge.import.image
+  (:require [clojure.java.shell :refer [sh]]
+            [clojure.string :as str]
+            [clojure.data.xml :as xml]
+            [svg-clj.elements :as svg]
+            [svg-clj.path :as path]
+            [svg-clj.utils :as utils]
+            [svg-clj.transforms :as tf]
+            [forge.model :as mdl]
+            [forge.compile.scad :refer [write]]))
+
 (defn img->str [fname]
   "Ingest image file `fname` and transform it into a hiccup data structure."
   (let [new-fname (str (first (str/split fname #"\.")) ".svg")]
@@ -48,39 +59,17 @@
   (let [group (svg/g seq)
         ctr (mapv float (tf/centroid group))]
     (->> seq
-         (map #(tf/translate (utils/v* [-1 -1] ctr) %)))))
+         (map #(tf/translate % (utils/v* [-1 -1] ctr))))))
 
-(defn scad->svg
-  [scad-block]
-  (let [scad (write-scad [(scad/fn! 200) scad-block])
+(defn mdl->svg
+  [mdl]
+  (let [scad (str "$fn=200;\n" (write mdl))
         fname (str (gensym "tmp") ".svg")]
     (do (sh "openscad" "/dev/stdin" "-o" fname :in scad)
         (let [svg (slurp fname)]
           (do (sh "rm" fname)
-              (str->elements svg))))))
-
-(defn line
-  [from to & {:keys [r]}]
-  (let [r (if r r 2)]
-    (scad/color 
-     [0 0 0 1]
-     (if (= from to)
-       (scad/sphere r)
-       (let [diff (map - to from)
-             norm (utils/distance from to)
-             rotate-angle (Math/acos (/ (last diff) norm))
-             rotate-axis [(- (nth diff 1)) (nth diff 0) 0]]
-         (scad/union
-          (scad/sphere r)
-          (scad/translate to (scad/sphere r))
-          (->> (scad/cylinder r norm)
-               (scad/translate [0 0 (/ norm 2)])
-               (scad/rotate rotate-angle rotate-axis)
-               (scad/translate from))))))))
-
-(defn polyline
-  [pts & {:keys [r]}]
-  (apply scad/union (map #(line (first %) (second %) :r r) (partition 2 1 pts))))
+              (rest 
+               (str->elements svg)))))))
 
 (defn flip-y
   [pts]
@@ -95,18 +84,17 @@
       (->> (mapcat split-path))
       (->> (map path->pts))
       (->> (map flip-y))
-      (->> (map add-z))
-      (->> (map #(polyline % :r r)))
-      scad/union))
+      (->> (map #(mdl/polyline %)))
+      mdl/union))
 
-(defn svg-path-elem->scad-polygon
+(defn- svg-path-elem->polygon
   [path-elem]
   (-> path-elem
       split-path
       (->> (map path->pts))
       (->> (map flip-y))
-      (->> (map scad/polygon))
-      (->> (apply scad/difference))))
+      (->> (map mdl/polygon))
+      (->> (apply mdl/difference))))
 
 (defn drawing
   [fname]
@@ -114,24 +102,5 @@
       img->str
       str->elements
       re-center
-      (->> (map svg-path-elem->scad-polygon))
-      scad/union))
-
-(defn linecube
-  [x y z]
-  (scad/union
-   (scad/color [0 1 0 1] (scad/cube x y z))
-   (scad/translate [(/ x -2.0) (/ y -2.0) (/ z -2.0)]
-    (scad/union
-     (line [0 0 0] [x 0 0])
-     (line [x 0 0] [x y 0])
-     (line [x y 0] [0 y 0])
-     (line [0 y 0] [0 0 0])
-     (line [0 0 0] [0 0 z])
-     (line [x 0 0] [x 0 z])
-     (line [x y 0] [x y z])
-     (line [0 y 0] [0 y z])
-     (line [0 0 z] [x 0 z])
-     (line [x 0 z] [x y z])
-     (line [x y z] [0 y z])
-     (line [0 y z] [0 0 z])))))
+      (->> (map svg-path-elem->polygon))
+      mdl/union))

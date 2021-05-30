@@ -1,7 +1,8 @@
 (ns forge.compile.scad
   (:require [clojure.java.shell :refer [sh]]
             [clojure.string :as str]
-            [forge.utils :as utils]))
+            [forge.utils :as utils]
+            [forge.model :as mdl]))
 
 ;; multimethod
 (defmulti write-expr
@@ -58,12 +59,12 @@
     ~@(when convexity [", convexity=" convexity])
     ");\n"))
 
-(defmethod write-expr :project
-  [depth [_ {:keys [cut]} & block]]
+(defmethod write-expr :slice
+  [depth [_ {:keys [z]} elem]]
   (concat
-   (list (indent depth) 
-         "projection (cut = " cut ") {\n")
-   (mapcat #(write-expr (inc depth) %1) block)
+   (list (indent depth)
+         "projection(cut=true){\n")
+   (write-expr (inc depth) (-> elem (mdl/translate [0 0 (- z)])))
    (list (indent depth) "}\n")))
 
 (defmethod write-expr :sphere
@@ -203,10 +204,10 @@
    (list (indent depth) "}\n")))
 
 (defmethod write-expr :color
-  [depth [_ [r g b a] elem]]
+  [depth [_ {:keys [r g b a]} elem]]
   (concat
     (list (indent depth) "color ([" r ", " g ", " b ", " a"]) {\n")
-    (write-block depth elem)
+    (write-expr depth elem)
     (list (indent depth) "}\n")))
 
 (defmethod write-expr :group 
@@ -216,13 +217,66 @@
    (mapcat #(write-expr (inc depth) %1) elem)
    (list (indent depth) "}\n")))
 
+(defn- scad-line
+  [a b & {:keys [r]}]
+  (let [r (if r r 2)
+        a (if (< (count a) 3) (forge.utils/add-z a) a)
+        b (if (< (count b) 3) (forge.utils/add-z b) b)]
+    (if (= a b)
+      (mdl/sphere r)
+      (let [[dx dy dz] (utils/v- a b)
+            norm (utils/distance b a)
+            rotate-angle (utils/to-deg (Math/acos (/ dz norm)))
+            rotate-axis [(- dy) dx 0]]
+        (-> (mdl/union
+             (mdl/sphere r)
+             (-> (mdl/sphere r) (mdl/translate a))
+             (-> (mdl/cylinder r norm)
+                 (mdl/translate [0 0 (/ norm 2)])
+                 (mdl/rotate rotate-angle rotate-axis)
+                 (mdl/translate b)))
+            (mdl/color [0 0 0 1]))))))
+
+(defn- scad-polyline
+  [pts & {:keys [r]}]
+  (apply mdl/union
+   (map #(scad-line (first %) (second %) :r r)
+        (partition 2 1 pts))))
+
+(defn- linecube
+  [x y z]
+  (mdl/union
+   (-> (mdl/box x y z) (mdl/color [0 1 0 1]))
+   (-> (mdl/union
+        (mdl/line [0 0 0] [x 0 0])
+        (mdl/line [x 0 0] [x y 0])
+        (mdl/line [x y 0] [0 y 0])
+        (mdl/line [0 y 0] [0 0 0])
+        (mdl/line [0 0 0] [0 0 z])
+        (mdl/line [x 0 0] [x 0 z])
+        (mdl/line [x y 0] [x y z])
+        (mdl/line [0 y 0] [0 y z])
+        (mdl/line [0 0 z] [x 0 z])
+        (mdl/line [x 0 z] [x y z])
+        (mdl/line [x y z] [0 y z])
+        (mdl/line [0 y z] [0 0 z]))
+       (mdl/translate [(/ x -2.0) (/ y -2.0) (/ z -2.0)]))))
+
+(defmethod write-expr :line
+  [depth [_ {:keys [a b]}]]
+  (write-expr depth (scad-line a b)))
+
+(defmethod write-expr :polyline
+  [depth [_ {:keys [pts]}]]
+  (write-expr depth (scad-polyline pts)))
+
 (defn write [& block]
   (str/join (write-expr 0 block)))
 
 #?(:clj
    (defn png!
      [fname mdl-data]
-     (let [scad (write-scad [#_(fn! 20) mdl-data])]
+     (let [scad (write [#_(fn! 20) mdl-data])]
        (sh "openscad" "/dev/stdin"
            "--imgsize" "400,400"
            "--projection" "orthogonal"

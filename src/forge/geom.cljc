@@ -129,12 +129,15 @@
   (= (into #{} pga)
      (into #{} pgb)))
 
-(declare close-path)
+(defn- close-pts
+  [pts]
+  (vec (take (inc (count pts)) (cycle pts))))
+
 (defn polygon-intersection
   [pga pgb]
   (when (not (identical-polygons? pga pgb))
-    (let [lines-a (partition 2 1 (close-path pga))
-          lines-b (partition 2 1 (close-path pgb))
+    (let [lines-a (partition 2 1 (close-pts pga))
+          lines-b (partition 2 1 (close-pts pgb))
           s (for [la lines-a
                   lb lines-b]
               (line-segment-intersection la lb))]

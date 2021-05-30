@@ -1,6 +1,8 @@
 (ns forge.model
   (:require [forge.utils :as utils]
-            [forge.geom :as geom]))
+            [forge.geom :as geom]
+            [forge.brep :as brep]
+            [forge.frep :as frep]))
 
 (def pi Math/PI)
 (def tau (* 2 pi))
@@ -33,9 +35,9 @@
   ([pts paths]
    [:polygon {:pts (vec pts) :paths paths}]))
 
-(defn project
-  [block cut]
-  [:project {:cut cut} block])
+(defn slice
+  [elem z]
+  [:slice {:z z} elem])
 
 (defn sphere
   [r]
