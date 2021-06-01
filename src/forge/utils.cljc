@@ -1,5 +1,6 @@
 (ns forge.utils
-  (:require [same :refer [ish? zeroish?]]))
+  (:require [clojure.string :as str]
+            [same :refer [ish? zeroish?]]))
 
 (defn nearly?
   "compare two float values for approximate equality.
@@ -307,3 +308,7 @@
     (for [step (range n)]
       [(* r (Math/cos (* step angle)))
        (* r (Math/sin (* step angle)))])))
+
+(defn ext
+  [fname]
+  (last (str/split fname #"\.")))

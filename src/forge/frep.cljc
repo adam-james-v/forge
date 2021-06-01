@@ -4,6 +4,7 @@
             [forge.delaunay :as delaunay]
             [svg-clj.elements :as svg]
             [svg-clj.transforms :as tf]
+            [svg-clj.tools :as tools]
             [clojure.string :as str]
             [same :refer [ish? zeroish?]]))
 
@@ -153,7 +154,7 @@
                                       "skyblue")
                               :opacity (if (< dist 0) 1 a)}))))))]
     (when (not (empty? render))
-      (svg-clj.tools/cider-show render))))
+      (svg-clj.tools/show render))))
 
 (def iso-euler-angles (map utils/to-rad [35.264 45 0]))
 (def origin-angle-adjust-a (map utils/to-rad [90 0 0]))

@@ -19,9 +19,6 @@
   [[& args] xf]
   (map #(elem-to-svg % xf) args))
 
-(defn block-to-svg [block xf]
-  (map #(elem-to-svg % xf) block))
-
 (defmethod elem-to-svg :circle
   [[_ {:keys [r center origin rotation translation]}] xf]
   (let [rot (if rotation rotation [0 0 0])

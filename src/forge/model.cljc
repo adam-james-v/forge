@@ -22,12 +22,16 @@
   [:polyline {:pts pts}])
 
 (defn rect
-  [x y]
-  [:rect {:x x :y y :center true}])
+  [w h]
+  [:rect {:w w :h h :center true}])
 
 (defn circle
   [r]
   [:circle {:r r}])
+
+(defn ellipse
+  [rx ry]
+  [:ellipse {:rx rx :ry ry}])
 
 (defn polygon
   ([pts]
@@ -88,18 +92,17 @@
   ([elem a [x y z]]
    [:rotate {:a a :x x :y y :z z} elem]))
 
-(defn group
-  [& elems]
-  (if (and (= 1 (count elems))
-           (not (keyword? (first (first elems)))))
-    ;; elems is a list of a list of elements
-    (into [:group {}] (first elems))
-    ;; elems is a single element OR a list of elements
-    (into [:group {}] (filter (complement nil?) elems))))
-
 (defn scale
   [elem [x y z]]
   [:scale {:x x :y y :z z} elem])
+
+(defn style
+  [[k props & content] style-map]
+  (into [k (merge props style-map)] content))
+
+(defn group
+  [& elems]
+  [:group {} elems])
 
 (defn mirror
   [elem [x y z]]

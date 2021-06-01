@@ -46,9 +46,9 @@
         "circle (r=" r ");\n"))
 
 (defmethod write-expr :rect
-  [depth [_ {:keys [x y center]}]]
+  [depth [_ {:keys [w h center]}]]
   (list (indent depth)
-        "square ([" x ", " y "]"
+        "square ([" w ", " h "]"
         (when center ", center=true") ");\n"))
 
 (defmethod write-expr :polygon
@@ -206,15 +206,19 @@
 (defmethod write-expr :color
   [depth [_ {:keys [r g b a]} elem]]
   (concat
-    (list (indent depth) "color ([" r ", " g ", " b ", " a"]) {\n")
+    (list (indent depth) "color (["
+          (/ r 255.0) ", "
+          (/ g 255.0) ", "
+          (/ b 255.0) ", "
+          (utils/clamp a 0.0 1.0) "]) {\n")
     (write-expr depth elem)
     (list (indent depth) "}\n")))
 
 (defmethod write-expr :group 
-  [depth [_ _ elem]]
+  [depth [_ _ elems]]
   (concat
    (list (indent depth) "group() {\n")
-   (mapcat #(write-expr (inc depth) %1) elem)
+   (write-expr (inc depth) elems)
    (list (indent depth) "}\n")))
 
 (defn- scad-line
@@ -284,7 +288,7 @@
            #_"--camera" #_"0,0,0,55,0,25,2900"
            "-o" fname
            :in scad)))
-)
+   )
 
 #?(:clj   
    (defn cider-show
@@ -292,4 +296,17 @@
      (let [fname "_imgtmp.png"]
        (do (png! fname mdl-data)
            (clojure.java.io/file fname))))
-)
+   )
+
+
+#?(:clj 
+   (defn mdl->svg
+     [mdl]
+     (let [scad (str "$fn=200;\n" (write mdl))
+           fname (str (gensym "tmp") ".svg")]
+       (do (sh "openscad" "/dev/stdin" "-o" fname :in scad)
+           (let [svg (slurp fname)]
+             (do (sh "rm" fname)
+                 (rest 
+                  (forge.import.image/str->elements svg)))))))
+   )

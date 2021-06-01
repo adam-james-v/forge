@@ -292,7 +292,8 @@ Use the util namespace to place functions which may be used across the other nam
 ** ns
 #+begin_src clojure :tangle ./src/forge/utils.cljc
 (ns forge.utils
-  (:require [same :refer [ish? zeroish?]])) 
+  (:require [clojure.string :as str]
+            [same :refer [ish? zeroish?]]))
 
 #+end_src
 ** comparing-floats
@@ -704,6 +705,14 @@ These are things like point list generators.
     (for [step (range n)]
       [(* r (Math/cos (* step angle)))
        (* r (Math/sin (* step angle)))])))
+
+#+END_SRC
+
+** misc
+#+BEGIN_SRC clojure :tangle ./src/forge/utils.cljc
+(defn ext
+  [fname]
+  (last (str/split fname #"\.")))
 
 #+END_SRC
 
@@ -1320,6 +1329,7 @@ This is (for now) a copy from:
             [forge.delaunay :as delaunay]
             [svg-clj.elements :as svg]
             [svg-clj.transforms :as tf]
+            [svg-clj.tools :as tools]
             [clojure.string :as str]
             [same :refer [ish? zeroish?]]))
 
@@ -1561,7 +1571,7 @@ As well, any polygon union should effectively produce the same polygon that woul
                                       "skyblue")
                               :opacity (if (< dist 0) 1 a)}))))))]
     (when (not (empty? render))
-      (svg-clj.tools/cider-show render))))
+      (svg-clj.tools/show render))))
 
 (def iso-euler-angles (map utils/to-rad [35.264 45 0]))
 (def origin-angle-adjust-a (map utils/to-rad [90 0 0]))
@@ -1897,12 +1907,16 @@ The namespace declaration.
   [:polyline {:pts pts}])
 
 (defn rect
-  [x y]
-  [:rect {:x x :y y :center true}])
+  [w h]
+  [:rect {:w w :h h :center true}])
 
 (defn circle
   [r]
   [:circle {:r r}])
+
+(defn ellipse
+  [rx ry]
+  [:ellipse {:rx rx :ry ry}])
 
 (defn polygon
   ([pts]
@@ -1982,24 +1996,27 @@ The namespace declaration.
 
 #+end_src
 
-*** group
-#+begin_src clojure :tangle ./src/forge/model.cljc
-(defn group
-  [& elems]
-  (if (and (= 1 (count elems))
-           (not (keyword? (first (first elems)))))
-    ;; elems is a list of a list of elements
-    (into [:group {}] (first elems))
-    ;; elems is a single element OR a list of elements
-    (into [:group {}] (filter (complement nil?) elems))))
-
-#+end_src
-
 *** scale
 #+begin_src clojure :tangle ./src/forge/model.cljc
 (defn scale
   [elem [x y z]]
   [:scale {:x x :y y :z z} elem])
+
+#+end_src
+
+*** style
+#+begin_src clojure :tangle ./src/forge/model.cljc
+(defn style
+  [[k props & content] style-map]
+  (into [k (merge props style-map)] content))
+
+#+end_src
+
+*** group
+#+begin_src clojure :tangle ./src/forge/model.cljc
+(defn group
+  [& elems]
+  [:group {} elems])
 
 #+end_src
 
@@ -2121,10 +2138,10 @@ This is just copy pasted from scad-drawing project. The intent here is to have a
             [clojure.data.xml :as xml]
             [svg-clj.elements :as svg]
             [svg-clj.path :as path]
-            [svg-clj.utils :as utils]
             [svg-clj.transforms :as tf]
+            [svg-clj.utils :refer [s->v]]
             [forge.model :as mdl]
-            [forge.compile.scad :refer [write]]))
+            [forge.utils :as utils]))
 
 #+end_src
 
@@ -2174,10 +2191,18 @@ This part of the library has an external dependency on vtracer:
                (->> (map str/trim)))]
     (map #(assoc-in [k props] [1 :d] %) ps)))
 
+(defn- closed?
+  [path]
+  (let [d (get-in path [1 :d])]
+    (-> d
+        str/trim
+        str/upper-case
+        (str/ends-with? "Z"))))
+
 (defn path->pts
   [path-elem]
   (let [cmds (path/path-string->commands (get-in path-elem [1 :d]))]
-    (mapv :input cmds)))
+    (into [] (filter some? (map :input cmds)))))
 
 (defn re-center
   [seq]
@@ -2185,20 +2210,6 @@ This part of the library has an external dependency on vtracer:
         ctr (mapv float (tf/centroid group))]
     (->> seq
          (map #(tf/translate % (utils/v* [-1 -1] ctr))))))
-
-#+end_src
-
-*** mdl->svg
-#+begin_src clojure :tangle ./src/forge/import/image.clj
-(defn mdl->svg
-  [mdl]
-  (let [scad (str "$fn=200;\n" (write mdl))
-        fname (str (gensym "tmp") ".svg")]
-    (do (sh "openscad" "/dev/stdin" "-o" fname :in scad)
-        (let [svg (slurp fname)]
-          (do (sh "rm" fname)
-              (rest 
-               (str->elements svg)))))))
 
 #+end_src
 
@@ -2210,7 +2221,135 @@ This part of the library has an external dependency on vtracer:
 
 #+end_src
 
-*** drawing
+*** svg->mdl
+Methods for converting all SVG elements into equivalent forge model elements/transforms.
+
+Elements being converted:
+ - circle
+ - ellipse
+ - line
+ - polygon
+ - polyline
+ - path
+ - rect
+ - g
+
+#+begin_src clojure :tangle ./src/forge/import/image.clj
+(defmulti svg->mdl
+  (fn [element]
+    (if (keyword? (first element))
+      (first element)
+      :list)))
+
+(defn- clean-props
+  [props]
+  (let [removable [:cx :cy :transform :width :height :x :y :d :fill-rule]]
+    (apply dissoc (concat [props] removable))))
+
+(defmethod svg->mdl :list
+  [elems]
+  (map svg->mdl elems))
+
+(defmethod svg->mdl :default [_] nil)
+
+(defmethod svg->mdl :circle
+  [[_ {:keys [cx cy r] :as props}]]
+  (let [[cx cy r] (map read-string [cx cy r])
+        xf-props (clean-props props)]
+    (cond-> (mdl/circle r)
+      true (mdl/style xf-props)
+      (and (not= cx 0)
+           (not= cy 0)) (mdl/translate [cx (- cy) 0]))))
+
+(defmethod svg->mdl :ellipse
+  [[_ {:keys [cx cy rx ry] :as props}]]
+  (let [[cx cy rx ry] (map read-string [cx cy rx ry])
+        xf-props (clean-props props)]
+    (cond-> (mdl/ellipse rx ry)
+      true (mdl/style xf-props)
+      (and (not= cx 0)
+           (not= cy 0)) (mdl/translate [cx cy 0]))))
+
+(defmethod svg->mdl :line
+  [[_ {:keys [x1 y1 x2 y2] :as props}]]
+  (let [[x1 y1 x2 y2] (map read-string [x1 y1 x2 y2])
+        xf-props (clean-props props)]
+    (-> (mdl/line [x1 (- y1) 0] [x2 (- y2) 0])
+        (mdl/style xf-props))))
+
+(defmethod svg->mdl :polyline
+  [[_ {:keys [points] :as props}]]
+  (let [xf-props (clean-props props)
+        pts (->> points
+                 s->v
+                 (partition 2))]
+    (-> (mdl/polyline (flip-y pts))
+        (mdl/style xf-props))))
+
+(defmethod svg->mdl :polygon
+  [[_ {:keys [points] :as props}]]
+  (let [xf-props (clean-props props)
+        pts (->> points
+                 s->v
+                 (partition 2))]
+    (-> (mdl/polygon (flip-y pts))
+        (mdl/style xf-props))))
+
+(defmethod svg->mdl :rect
+  [[_ {:keys [width height x y] :as props}]]
+  (let [[width height x y] (map read-string [width height x y])
+        xf-props (clean-props props)
+        pos (utils/v+ [x (- y)] [(/ width 2.0) (/ height -2.0)])]
+    (-> (mdl/rect width height)
+        (mdl/style xf-props)
+        (mdl/translate (conj pos 0)))))
+
+(defmethod svg->mdl :g
+  [[_ props & elems]]
+  (let [xf-props (clean-props props)]
+    [:group xf-props (map svg->mdl elems)]))
+
+(defn- bb-area
+  [elem]
+  (reduce * (tf/bb-dims elem)))
+
+(defn- svg-path-elem->polygon
+  [path-elem]
+  (let [pgs (->> path-elem
+                 split-path 
+                 (sort-by bb-area)
+                 (map path->pts) 
+                 (map flip-y)
+                 (map mdl/polygon)
+                 reverse)]
+    (if (> (count pgs) 1)
+      (apply mdl/difference pgs)
+      (first pgs))))
+
+(defn- svg-path-elem->polyline
+  [path-elem]
+  (let [pgs (->> path-elem
+                 split-path 
+                 (sort-by bb-area)
+                 (map path->pts) 
+                 (map flip-y) 
+                 (map mdl/polyline)
+                 reverse)]
+    (if (> (count pgs) 1)
+      (apply mdl/difference pgs)
+      (first pgs))))
+
+(defmethod svg->mdl :path
+  [[_ props :as elem]]
+  (let [xf-props (clean-props props)]
+    (-> (if (closed? elem)
+          (svg-path-elem->polygon elem)
+          (svg-path-elem->polyline elem))
+        (mdl/style xf-props))))
+
+#+end_src
+
+*** import
 #+begin_src clojure :tangle ./src/forge/import/image.clj
 (defn line-drawing
   [fname & {:keys [r]}]
@@ -2224,16 +2363,7 @@ This part of the library has an external dependency on vtracer:
       (->> (map #(mdl/polyline %)))
       mdl/union))
 
-(defn- svg-path-elem->polygon
-  [path-elem]
-  (-> path-elem
-      split-path
-      (->> (map path->pts))
-      (->> (map flip-y))
-      (->> (map mdl/polygon))
-      (->> (apply mdl/difference))))
-
-(defn drawing
+(defn import-png
   [fname]
   (-> fname
       img->str
@@ -2241,6 +2371,21 @@ This part of the library has an external dependency on vtracer:
       re-center
       (->> (map svg-path-elem->polygon))
       mdl/union))
+
+(defn import-svg
+  [fname]
+  (-> fname
+      slurp
+      str->elements
+      (->> (map svg->mdl))
+      (->> (filter some?))))
+
+(defn import
+  [fname]
+  (let [fext (utils/ext fname)
+        f (get {"svg" import-svg
+                "png" import-png} fext)]
+    (f fname)))
 
 #+end_src
 
@@ -2322,9 +2467,9 @@ This is based off of Matthew Farrell's work on scad-clj. The code is modified in
         "circle (r=" r ");\n"))
 
 (defmethod write-expr :rect
-  [depth [_ {:keys [x y center]}]]
+  [depth [_ {:keys [w h center]}]]
   (list (indent depth)
-        "square ([" x ", " y "]"
+        "square ([" w ", " h "]"
         (when center ", center=true") ");\n"))
 
 (defmethod write-expr :polygon
@@ -2498,15 +2643,19 @@ This is based off of Matthew Farrell's work on scad-clj. The code is modified in
 (defmethod write-expr :color
   [depth [_ {:keys [r g b a]} elem]]
   (concat
-    (list (indent depth) "color ([" r ", " g ", " b ", " a"]) {\n")
+    (list (indent depth) "color (["
+          (/ r 255.0) ", "
+          (/ g 255.0) ", "
+          (/ b 255.0) ", "
+          (utils/clamp a 0.0 1.0) "]) {\n")
     (write-expr depth elem)
     (list (indent depth) "}\n")))
 
 (defmethod write-expr :group 
-  [depth [_ _ elem]]
+  [depth [_ _ elems]]
   (concat
    (list (indent depth) "group() {\n")
-   (mapcat #(write-expr (inc depth) %1) elem)
+   (write-expr (inc depth) elems)
    (list (indent depth) "}\n")))
 
 #+end_src
@@ -2588,7 +2737,7 @@ This is based off of Matthew Farrell's work on scad-clj. The code is modified in
            #_"--camera" #_"0,0,0,55,0,25,2900"
            "-o" fname
            :in scad)))
-)
+   )
 
 #?(:clj   
    (defn cider-show
@@ -2596,7 +2745,20 @@ This is based off of Matthew Farrell's work on scad-clj. The code is modified in
      (let [fname "_imgtmp.png"]
        (do (png! fname mdl-data)
            (clojure.java.io/file fname))))
-)
+   )
+
+
+#?(:clj 
+   (defn mdl->svg
+     [mdl]
+     (let [scad (str "$fn=200;\n" (write mdl))
+           fname (str (gensym "tmp") ".svg")]
+       (do (sh "openscad" "/dev/stdin" "-o" fname :in scad)
+           (let [svg (slurp fname)]
+             (do (sh "rm" fname)
+                 (rest 
+                  (forge.import.image/str->elements svg)))))))
+   )
 #+end_src
 
 ** svg
@@ -2630,9 +2792,6 @@ Every elem-to-svg needs the element and a transform function (xf) which takes a 
 (defmethod elem-to-svg :list 
   [[& args] xf]
   (map #(elem-to-svg % xf) args))
-
-(defn block-to-svg [block xf]
-  (map #(elem-to-svg % xf) block))
 
 #+end_src
 
@@ -2737,65 +2896,23 @@ A namespace for playing around with fns
 (ns forge.scratch
   (:require [forge.model :as mdl]
             [forge.utils :as utils]
-            [forge.compile.scad :as scad]
-            [forge.compile.svg :as svg]))
-
-(defn fillet-tool [r l]
-  (-> (mdl/difference
-       (mdl/box (* r 3) (* r 3) l)
-       (mdl/cylinder r (* l 2))
-       (-> (mdl/box (* r 3.1) (* r 3.1) (* l 2))
-           (mdl/translate [(* r -1.5) 0 0]))
-       (-> (mdl/box (* r 3.1) (* r 3.1) (* l 2))
-           (mdl/translate [0 (* r -1.5) 0])))
-      (mdl/translate [(- r) ( - r) 0])))
-
-(def plate
-  (let [[w l t] [56 85 1.5]
-        fillet-r 2.5
-        hole-r 1.35
-        mount-hole (mdl/union
-                    (mdl/cylinder hole-r (* 2 t))
-                    (mdl/translate (mdl/cylinder 3 1) [0 0 1.1])
-                    (mdl/translate (mdl/cylinder 3 1) [0 0 -1.1]))]
-    (-> (mdl/difference
-         ;; plate base
-         (mdl/box w l t)
-         ;; fillets
-         (-> (fillet-tool fillet-r 4)
-             (mdl/rotate [0 0 0])
-             (mdl/translate [(/ w 2) (/ l 2) 0]))
-         (-> (fillet-tool fillet-r 4)
-             (mdl/rotate [0 0 90])
-             (mdl/translate [(/ w -2) (/ l 2) 0]))
-         (-> (fillet-tool fillet-r 4)
-             (mdl/rotate [0 0 180])
-             (mdl/translate [(/ w -2) (/ l -2) 0]))
-         (-> (fillet-tool fillet-r 4)
-             (mdl/rotate [0 0 270])
-             (mdl/translate [(/ w 2) (/ l -2) 0]))
-         ;; mount holes
-         (-> mount-hole
-             (mdl/translate [(- (/ w 2) 3.25) (- (/ l 2) 3.25) 0]))
-         (-> mount-hole
-             (mdl/translate [(+ (/ w -2) 3.25) (- (/ l 2) 3.25) 0]))
-         (-> mount-hole
-             (mdl/translate [(+ (/ w -2) 3.25) (+ (/ l -2) 23.25) 0]))
-         (-> mount-hole
-             (mdl/translate [(- (/ w 2) 3.25) (+ (/ l -2) 23.25) 0])))
-        (mdl/translate [0 0 (/ t -2.0)]))))
+            [forge.import.image :as img]
+            [forge.compile.scad :as scad]))
 
 (def a (-> (mdl/circle 20) 
            (mdl/extrude 100)))
 (def b (-> (mdl/circle 20)
            (mdl/translate [40 0 0])
            (mdl/revolve 360)))
-(def c (-> (mdl/polygon (utils/regular-polygon-pts 40 6))
-           (mdl/translate [40 0 0])
+(def c (-> (utils/regular-polygon-pts 30 8)
+           (mdl/polygon)
+           (mdl/translate [80 0 0])
            (mdl/revolve 360)))
 
-(scad/cider-show c)
-#_(spit "forge.scad" (scad/write plate))
+(def d (-> (img/import "sk.svg")
+           #_(mdl/extrude 20)))
 
+(scad/cider-show d)
+(spit "forge.scad" (scad/write plate))
 
 #+end_src
