@@ -2,6 +2,7 @@
   (:require [clojure.java.shell :refer [sh]]
             [clojure.string :as str]
             [forge.utils :as utils]
+            [svg-clj.utils :refer [svg-str->elements]]
             [forge.model :as mdl]))
 
 ;; multimethod
@@ -233,8 +234,8 @@
             rotate-angle (utils/to-deg (Math/acos (/ dz norm)))
             rotate-axis [(- dy) dx 0]]
         (-> (mdl/union
-             (mdl/sphere r)
              (-> (mdl/sphere r) (mdl/translate a))
+             (-> (mdl/sphere r) (mdl/translate b))
              (-> (mdl/cylinder r norm)
                  (mdl/translate [0 0 (/ norm 2)])
                  (mdl/rotate rotate-angle rotate-axis)
@@ -290,7 +291,7 @@
            :in scad)))
    )
 
-#?(:clj   
+#?(:clj
    (defn cider-show
      [mdl-data]
      (let [fname "_imgtmp.png"]
@@ -298,15 +299,14 @@
            (clojure.java.io/file fname))))
    )
 
-
 #?(:clj 
    (defn mdl->svg
      [mdl]
      (let [scad (str "$fn=200;\n" (write mdl))
            fname (str (gensym "tmp") ".svg")]
        (do (sh "openscad" "/dev/stdin" "-o" fname :in scad)
-           (let [svg (slurp fname)]
+           (let [svg-str (slurp fname)]
              (do (sh "rm" fname)
                  (rest 
-                  (forge.import.image/str->elements svg)))))))
+                  (svg-str->elements svg-str)))))))
    )

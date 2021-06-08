@@ -17,6 +17,8 @@
   org.clojure/test.check         {:mvn/version "0.9.0"}
   org.clojure/math.numeric-tower {:mvn/version "0.0.4"}
   org.clojure/core.logic         {:mvn/version "0.8.11"}
+  net.mikera/core.matrix         {:mvn/version "0.62.0"}
+  com.climate/claypoole          {:mvn/version "1.1.4"}
   hiccup/hiccup                  {:mvn/version "2.0.0-alpha2"}
   hawk/hawk                      {:mvn/version "0.2.11"}
   same/ish                       {:mvn/version "0.1.4"}
@@ -319,10 +321,10 @@ It is sufficient for Forge for the following reasons:
   "compare two float values for approximate equality.
    
    Default epsilon = 0.00001"
-  ([a b]
+  ([^long a ^long b]
    (nearly? a b 0.00001))
 
-  ([a b epsilon]
+  ([^long a ^long b ^long epsilon]
    (let [a (float a)
          b (float b)]
      (if (= a b)
@@ -344,7 +346,7 @@ It is sufficient for Forge for the following reasons:
   (if (not (= (count coll-a) (count coll-b)))
     #?(:clj  (throw (Exception. "collections must be same size."))
        :cljs (throw (js/Error. "collections must be same size.")))
-    (let [diffs (mapv #(float (Math/abs (- %1 %2))) coll-a coll-b)]
+    (let [diffs (mapv #(float (Math/abs ^long (- %1 %2))) coll-a coll-b)]
       (empty? 
        (filter 
         false? 
@@ -414,6 +416,14 @@ and re-implemented with clojure.test library.
 
 #+end_src
 
+** vector-arithmetic
+#+begin_src clojure :tangle ./src/forge/utils.cljc
+(def v+ (partial mapv +))
+(def v- (partial mapv -))
+(def v* (partial mapv *))
+
+#+end_src
+
 ** math-utils
 #+begin_src clojure :tangle ./src/forge/utils.cljc
 (defn to-deg
@@ -458,13 +468,9 @@ and re-implemented with clojure.test library.
   [pt]
   (conj (vec pt) 0))
 
-#+end_src
-
-** vector-arithmetic
-#+begin_src clojure :tangle ./src/forge/utils.cljc
-(def v+ (partial mapv +))
-(def v- (partial mapv -))
-(def v* (partial mapv *))
+(defn flip-y
+  [pts]
+  (map #(v* % [1 -1]) pts))
 
 #+end_src
 
@@ -492,15 +498,14 @@ and re-implemented with clojure.test library.
   [a b]
   (reduce push-new a b)) 
 
-(defn position
+#_(defn position
   "returns index of first match to item in the src vector. Otherwise nil"
   [src item]
   (let [res (.indexOf src item)]
-    (if (>= res 0)
-      res
-      nil)))
+    (when (>= res 0)
+      res)))
 
-(defn link
+#_(defn link
   "Swap an item for it's index in a different list"
   [src item]
   (let [type-k (first item)
@@ -553,12 +558,12 @@ and re-implemented with clojure.test library.
   [a b]
   (let [v (v- b a)
         v2 (reduce + (v* v v))]
-    (Math/sqrt v2)))
+    (Math/sqrt ^double v2)))
 
 (defn normalize
   "find the unit vector of a given vector"
   [v]
-  (let [m (Math/sqrt (reduce + (v* v v)))]
+  (let [m (Math/sqrt ^double (reduce + (v* v v)))]
     (mapv / v (repeat m))))
 
 (defn on-line?
@@ -585,7 +590,8 @@ and re-implemented with clojure.test library.
     (all-nearly? (cross* ap bp) [0 0 0])))
 
 (defn sin-cos-pair [theta]
-  [(Math/sin (to-rad theta)) (Math/cos (to-rad theta))])
+  [(Math/sin ^long (to-rad theta))
+   (Math/cos ^long (to-rad theta))])
 
 (defn rot-pt-2d
   [[x y] theta]
@@ -623,7 +629,7 @@ and re-implemented with clojure.test library.
   [pt plane]
   (let [a (map - pt (first plane))
         n (normal (first plane) (second plane) (nth plane 2))]
-    (nearly? (Math/abs (dot* a n)) 0)))
+    (nearly? (Math/abs ^long (dot* a n)) 0)))
 
 (defn plane-triple
   "gets a list of 3 points on a plane from a list of points"
@@ -670,9 +676,9 @@ and re-implemented with clojure.test library.
         l1 (distance p1 p2)
         l2 (distance p3 p2)
         n (dot* v1 v2)
-        d (Math/abs (* l1 l2))]
+        d (Math/abs ^long (* l1 l2))]
     (when (not (= 0.0 (float d)))
-      (to-deg (Math/acos (/ n d))))))
+      (to-deg (Math/acos ^long (/ n d))))))
 
 ;; https://math.stackexchange.com/a/1743505
 (defn center-from-pts
@@ -1324,7 +1330,10 @@ This is (for now) a copy from:
 ** ns
 #+begin_src clojure :tangle ./src/forge/frep.cljc
 (ns forge.frep
-  (:require [forge.utils :as utils]
+  (:require [clojure.core.matrix :as m]
+            [clojure.core.matrix.operators :as mo]
+            [com.climate.claypoole :as cp]
+            [forge.utils :as utils]
             [forge.geom :as geom]
             [forge.delaunay :as delaunay]
             [svg-clj.elements :as svg]
@@ -1428,7 +1437,7 @@ This is (for now) a copy from:
   [l w]
   (let [b [(/ l 2.0) (/ w 2.0)]]
     (fn [pt]
-      (let [abs-pt (mapv #(Math/abs %) pt)  
+      (let [abs-pt (mapv #(Math/abs ^long %) pt)  
             d (utils/v- abs-pt b)]
         (+ (utils/distance (mapv #(max % 0) d) (repeat 0))
            (min (apply max d) 0))))))
@@ -1458,21 +1467,112 @@ As well, any polygon union should effectively produce the same polygon that woul
 
 (= (union (polygon pts-a) (polygon pts-b)) (polygon pts-a pts-b))
 
+
+#+begin_src c
+
+float sdPolygon( in vec2[N] v, in vec2 p )
+
+{
+    float d = dot(p-v[0],p-v[0]);
+    float s = 1.0;
+
+    for( int i=0, j=N-1; i<N; j=i, i++ )
+    {
+        vec2 e = v[j] - v[i];
+        vec2 w =    p - v[i];
+        vec2 b = w - e*clamp( dot(w,e)/dot(e,e), 0.0, 1.0 );
+        d = min( d, dot(b,b) );
+
+        bvec3 c = bvec3(p.y >= v[i].y,
+                        p.y < v[j].y,
+                        e.x * w.y > e.y * w.x);
+        if( all(c) || all(not(c)) ) s*=-1.0;  
+    }
+    return s*sqrt(d);
+}
+
+#+end_src
+
+
+alt conditional for checkign c
+
+(or (every? identity c) (every? not c))
+
+
 #+BEGIN_SRC clojure :tangle ./src/forge/frep.cljc
+
+
+
+
+
+
+
+
+
 (defn polygon
   [pts]
   (let [tris (map #(apply triangle %) (geom/clip-ears pts))] 
     (reduce union tris)))
 
 
+
+
+
+
+
+
+
+
+
+
+(defn polygon
+  [pts]
+  (fn [[px py :as pt]]
+    (let [pts (vec pts)
+          n (count pts)
+          d1 (utils/dot* (utils/v- pt (first pts))
+                           (utils/v- pt (first pts)))]
+      (loop [i 0
+             j (dec n)
+             d d1
+             s 1]
+        (if (< i n)
+          (let [[vix viy :as vi] (get pts i)
+                [vjx vjy :as vj] (get pts j)
+                [ex ey :as e] (utils/v- vj vi)
+                [wx wy :as w] (utils/v- pt vi)
+                [bx by :as b] (utils/v-
+                               w
+                               (mapv #(* % (utils/clamp 
+                                            (/ (utils/dot* w e)
+                                               (utils/dot* e e)) 0.0 1.0)) e))
+                d (min d (utils/dot* b b))
+                c [(>= py viy)
+                   ( < py vjy)
+                   ( > (* ex wy) (* ey wx))]
+                s (if (= (count (into #{} c)) 1) (* s -1) (* s 1))]
+            (recur (inc i) i d s))
+          (* s (Math/sqrt d)))))))
+
+
+
+
+
+
+
+
+
+
+
+
 #+END_SRC
 
 ** sphere
 #+BEGIN_SRC clojure :tangle ./src/forge/frep.cljc
-(defn sphere [r]
+(defn sphere
+  [r]
   (fn [pt]
-    (let [[x y z] pt]
-      (+ (utils/sq x) (utils/sq y) (utils/sq z) (- (utils/sq r))))))
+    (- (utils/distance pt [0 0 0]) r)))
 
 #+END_SRC
 
@@ -1504,7 +1604,7 @@ As well, any polygon union should effectively produce the same polygon that woul
   [frep h]
   (fn [pt]
     (let [d (frep (drop-last pt))
-          w (- (Math/abs (- (last pt) (/ h 2))) (/ h 2))]
+          w (- (Math/abs ^long (- (last pt) (/ h 2))) (/ h 2))]
       (+ (min (max d w) 0)
          (utils/distance [0 0] [(max d 0) (max w 0)])))))
 
@@ -1549,40 +1649,201 @@ As well, any polygon union should effectively produce the same polygon that woul
 #+END_SRC
 
 ** tools
+- tried pcalls and it has similar performance to the pmap approach in prep-fn-grid.
+
+- a hexagon of radius 50 takes about 6seconds to render (2d). this is still too slow... so I haven't moved to making a fast 3D renderer yet.
+
 #+begin_src clojure :tangle ./src/forge/frep.cljc
+(defn prep-fn-grid
+  [x1 y1 x2 y2 f]
+  (let [pts (for [x (range x1 (inc x2))
+                  y (range y1 (inc y2))] [x y])]
+    (cp/pmap 10 #(vector % (f %)) pts)))
+
+(defn render-pt
+  [[pt dist]]
+  (let [dist (utils/round dist 4)
+        r 1
+        a (utils/round 
+           (- 1 (Math/abs ^double (/ (utils/clamp dist (- r) r) r))) 3)]
+    (when (< -1000000 dist r)
+      (svg/g 
+       (-> (svg/rect 1 1)
+           (tf/translate [0.5 0.5])
+           (tf/translate pt)
+           (tf/style {:fill (if (< dist 0)
+                              "slategray"
+                              "none")
+                      :opacity 1 #_(if (< dist (- r)) 1 a)}))
+       (-> (svg/rect 1 1)
+           (tf/translate [0.5 0.5])
+           (tf/translate pt)
+           (tf/style {:fill (if (> dist (- r))
+                              "#ffeeff"
+                              "none")
+                      :opacity a}))))))
+
+(defn prep-fn-grid6
+  [x1 y1 x2 y2 f]
+  (cp/pfor 10 [x (range x1 (inc x2))
+               y (range y1 (inc y2))]
+           (render-pt [[x y] (f [x y])])))
+
+(defn cider-show6
+  [frep]
+  (let [render (remove nil? (prep-fn-grid6 -200 -200 200 200 frep))]
+    (when (not (empty? render))
+      (svg-clj.tools/cider-show render))))
+
 (defn cider-show
   [frep]
-  (let [render
-        (filter 
-         some?
-         (for [x (range -200 201)
-               y (range -200 201)]
-           (let [r 5.0
-                 pt [x y]
-                 dist (frep pt)
-                 a (utils/round 
-                    (- 1 (/ (utils/clamp dist 0 r) r)) 3)]
-             (when (< (- r) dist r)
-               (-> (svg/rect 1 1)
-                   (tf/translate [0.5 0.5])
-                   (tf/translate pt)
-                   (tf/style {:fill (if (> dist 0)
-                                      "hotpink"
-                                      "skyblue")
-                              :opacity (if (< dist 0) 1 a)}))))))]
+  (let [grid (prep-fn-grid -200 -200 200 200 frep)
+        render (remove nil? (cp/pmap 10 render-pt grid))]
     (when (not (empty? render))
-      (svg-clj.tools/show render))))
+      (svg-clj.tools/cider-show render))))
 
-(def iso-euler-angles (map utils/to-rad [35.264 45 0]))
-(def origin-angle-adjust-a (map utils/to-rad [90 0 0]))
-(def origin-angle-adjust-b (map utils/to-rad [0 -90 0]))
+(defn idx-grid
+  [x1 y1 x2 y2]
+  (m/array :ndarray
+   (for [x (range x1 x2)]
+     (for [y (range y1 y2)]
+       {:x x :y y}))))
+
+(defn array-frep
+  [frep]
+  (fn [pt _]
+    (frep pt)))
+
+(defn render-pt2
+  [pt dist]
+  (let [dist (utils/round dist 4)
+        r 10
+        a (utils/round 
+           (- 1 (Math/abs ^double (/ (utils/clamp dist (- r) r) r))) 3)]
+    (when (< -1000000 dist r)
+      {:result
+      (svg/g 
+       (-> (svg/rect 1 1)
+           (tf/translate [0.5 0.5])
+           (tf/translate pt)
+           (tf/style {:fill (if (< dist 0)
+                              "slategray"
+                              "none")
+                      :opacity 1 #_(if (< dist (- r)) 1 a)}))
+       (-> (svg/rect 1 1)
+           (tf/translate [0.5 0.5])
+           (tf/translate pt)
+           (tf/style {:fill (if (> dist (- r))
+                              "#ffeeff"
+                              "none")
+                      :opacity a})))})))
+
+(defn render-pt3
+  [frep pt dist]
+  (let [dist (utils/round (frep pt) 4)
+        r 10
+        a (utils/round 
+           (- 1 (Math/abs ^double (/ (utils/clamp dist (- r) r) r))) 3)]
+    (when (< -1000000 dist r)
+      {:result
+      (svg/g 
+       (-> (svg/rect 1 1)
+           (tf/translate [0.5 0.5])
+           (tf/translate pt)
+           (tf/style {:fill (if (< dist 0)
+                              "slategray"
+                              "none")
+                      :opacity 1 #_(if (< dist (- r)) 1 a)}))
+       (-> (svg/rect 1 1)
+           (tf/translate [0.5 0.5])
+           (tf/translate pt)
+           (tf/style {:fill (if (> dist (- r))
+                              "#ffeeff"
+                              "none")
+                      :opacity a})))})))
+
+(defn cider-show2
+  [frep]
+  (let [pixels (m/new-array :ndarray [400 400])]
+    (do (m/emap-indexed! (array-frep (translate frep [-200 -200])) pixels)
+        (m/emap-indexed! render-pt2 pixels)
+        (let [spixels (pmap :result (filter some? (apply concat pixels)))]
+          (when (not (empty? spixels))
+            (svg-clj.tools/cider-show spixels))))))
+
+(defn cider-show3
+  [frep]
+  (let [pixels (m/new-array :ndarray [400 400])
+        f (translate frep [-200 -200])
+        spixels (->> pixels
+                     (m/emap-indexed (array-frep f))
+                     (m/emap-indexed render-pt2)
+                     (apply concat)
+                     (filter some?)
+                     (pmap :result))]
+    (when (not (empty? spixels))
+      (svg-clj.tools/cider-show spixels))))
+
+(defn cider-show4
+  [frep]
+  (let [frep (translate frep [-200 -200])
+        pixels (m/new-array :ndarray [400 400])]
+    (do (m/emap-indexed! (partial render-pt3 frep) pixels)
+        (let [spixels (pmap :result (filter some? (apply concat pixels)))]
+          (when (not (empty? spixels))
+            (svg-clj.tools/cider-show spixels))))))
+
+(defn render-pt5
+  [f pt]
+  (let [dist (utils/round (f pt) 4)
+        r 10
+        a (utils/round 
+           (- 1 (Math/abs ^double (/ (utils/clamp dist (- r) r) r))) 3)]
+    (when (< -1000000 dist r)
+      (svg/g 
+       (-> (svg/rect 1 1)
+           (tf/translate [0.5 0.5])
+           (tf/translate pt)
+           (tf/style {:fill (if (< dist 0)
+                              "slategray"
+                              "none")
+                      :opacity 1 #_(if (< dist (- r)) 1 a)}))
+       (-> (svg/rect 1 1)
+           (tf/translate [0.5 0.5])
+           (tf/translate pt)
+           (tf/style {:fill (if (> dist (- r))
+                              "#ffeeff"
+                              "none")
+                      :opacity a}))))))
+
+(defn render5
+  [w h frep render-fn]
+  (let [xf (partial render-fn (translate frep [(/ w -2.0) (/ h -2.0)]))
+        pts (for [x (range w)
+                  y (range h)] [x y])]
+    (doall (pmap xf pts))))
+
+(defn cider-show5
+  [frep]
+  (let [render (filter some? (render5 400 400 frep render-pt5))]
+    (when (not (empty? render))
+      (svg-clj.tools/cider-show render))))
+
+#+end_src
+
+
+#+begin_src clojure :tangle ./src/forge/frep.cljc
+(def iso-euler-angles [35.264 45 0])
+(def origin-angle-adjust-a [90 0 0])
+(def origin-angle-adjust-b [0 -90 0])
 
 (defn isometric-xf
   [frep]
   (-> frep
-      (rotate origin-angle-adjust-a)
-      (rotate origin-angle-adjust-b)
-      (rotate iso-euler-angles)))
+      #_(rotate origin-angle-adjust-b)
+      #_(rotate origin-angle-adjust-a)
+      (rotate iso-euler-angles)
+      (rotate [0 0 45])))
 
 (defn cider-show-3d
   [frep]
@@ -1593,35 +1854,80 @@ As well, any polygon union should effectively produce the same polygon that woul
          (for [x (range -200 201 1)
                y (range -200 201 1)
                z (range -200 201 1)]
-             (let [r 0.5
-                   pt [x y z]
-                   dist (frep pt)
-                   a (utils/round 
-                      (- 1 (/ (utils/clamp dist 0 r) r)) 3)]
-               (when (< (- r) dist r)
-                 (-> (svg/rect 1 1)
-                     (tf/translate [0.5 0.5])
-                     (tf/translate (drop-last pt))
-                     (tf/style {:fill (if (> dist 0)
-                                        "hotpink"
-                                        "skyblue")
-                                :opacity (if (< dist 0) 1 a)}))))))]
-        (when (not (empty? render))
-          (svg-clj.tools/cider-show render))))
+           (let [r 0.5
+                 pt [x y z]
+                 dist (frep pt)
+                 a (utils/round 
+                    (- 1 (/ (utils/clamp dist 0 r) r)) 3)]
+             (when (< (- r) dist r)
+               (-> (svg/rect 1 1)
+                   (tf/translate [0.5 0.5])
+                   (tf/translate (drop-last pt))
+                   (tf/style {:fill (if (> dist 0)
+                                      "hotpink"
+                                      "skyblue")
+                              :opacity (if (< dist 0) 1 a)}))))))]
+    (when (not (empty? render))
+      (svg-clj.tools/cider-show render))))
 
 (defn slice
   [frep z]
   (fn [pt]
     (frep (conj pt z))))
 
-(def a (-> (utils/regular-polygon-pts 50 8)
-           (polygon)
-           (translate [200 0 0])
-           (revolve)))
+(def a (-> (utils/regular-polygon-pts 80 8)
+           (polygon)))
 
-(def b (-> (utils/regular-polygon-pts 50 8)
-           polygon
+(def b (-> a
            (extrude 100)))
+#+end_src
+
+
+#+begin_src clojure :tangle ./src/forge/frep.cljc
+(defn march
+  [f [x y]]
+  (let [frep (isometric-xf f)
+        from (conj [x y] -200)
+        dir [0 0 1]
+        max-steps 50
+        min-dist 0.0001]
+    (loop [n-steps 0
+           total-dist 0]
+      (let [pt (utils/v+ from [0 0 total-dist])
+            d (utils/round (frep pt) 4)]
+        (if (or (> n-steps max-steps)
+                (< d min-dist))
+          (- 1.0 (/ n-steps max-steps))
+          (recur (inc n-steps) (+ total-dist d)))))))
+
+(defn render-pixel
+  [[pt a]]
+  (when (> a 0.0001)
+    (-> (svg/rect 1 1)
+        (tf/translate [0.5 0.5])
+        (tf/translate pt)
+        (tf/style {:fill "slategray"
+                   :opacity a}))))
+
+(defn render-frep
+  [x1 y1 x2 y2 f]
+  (cp/pfor 10 [x (range x1 (inc x2))
+               y (range y1 (inc y2))]
+           (render-pixel [[x y] (f [x y])])))
+
+(defn cider-show-3d
+  [frep]
+  (let [f (partial march frep)
+        render (remove nil? (render-frep -200 -200 200 200 f))]
+    (when (not (empty? render))
+      (svg-clj.tools/cider-show render))))
+
+(def asdf
+  (let [base (box 200 200 200)]
+    (-> (difference
+         (box 80 80 80)
+         (sphere 50))
+        (rotate [0 0 85]))))
 
 #+end_src
 
@@ -2139,7 +2445,8 @@ This is just copy pasted from scad-drawing project. The intent here is to have a
             [svg-clj.elements :as svg]
             [svg-clj.path :as path]
             [svg-clj.transforms :as tf]
-            [svg-clj.utils :refer [s->v]]
+            [svg-clj.utils :refer [s->v
+                                   svg-str->elements]]
             [forge.model :as mdl]
             [forge.utils :as utils]))
 
@@ -2151,7 +2458,8 @@ This part of the library has an external dependency on vtracer:
 [[https://github.com/visioncortex/vtracer]]
 
 #+begin_src clojure :tangle ./src/forge/import/image.clj
-(defn img->str [fname]
+(defn img->str 
+  [fname]
   "Ingest image file `fname` and transform it into a hiccup data structure."
   (let [new-fname (str (first (str/split fname #"\.")) ".svg")]
     (sh "vtracer" 
@@ -2166,31 +2474,6 @@ This part of the library has an external dependency on vtracer:
           (str/replace #"<\?xml.+>" "")
           str/trim))))
 
-;; xml parse/transform technique is from:
-;; https://github.com/babashka/babashka/blob/master/examples/portal.clj
-(defn xml->hiccup [xml]
-  (if-let [t (:tag xml)]
-    (let [elt [t]
-          elt (if-let [attrs (:attrs xml)]
-                (conj elt attrs)
-                elt)]
-      (into elt (map xml->hiccup (:content xml))))
-    xml))
-
-(defn str->elements
-  [str]
-  (-> str
-      (xml/parse-str :namespace-aware false)
-      xml->hiccup
-      (->> (drop 2))))
-
-(defn split-path
-  [[k props]]
-  (let [ps (-> (:d props)
-               (str/split #"(?=M)")
-               (->> (map str/trim)))]
-    (map #(assoc-in [k props] [1 :d] %) ps)))
-
 (defn- closed?
   [path]
   (let [d (get-in path [1 :d])]
@@ -2199,25 +2482,12 @@ This part of the library has an external dependency on vtracer:
         str/upper-case
         (str/ends-with? "Z"))))
 
-(defn path->pts
-  [path-elem]
-  (let [cmds (path/path-string->commands (get-in path-elem [1 :d]))]
-    (into [] (filter some? (map :input cmds)))))
-
 (defn re-center
   [seq]
   (let [group (svg/g seq)
         ctr (mapv float (tf/centroid group))]
     (->> seq
          (map #(tf/translate % (utils/v* [-1 -1] ctr))))))
-
-#+end_src
-
-*** utils
-#+begin_src clojure :tangle ./src/forge/import/image.clj
-(defn flip-y
-  [pts]
-  (map #(utils/v* % [1 -1]) pts))
 
 #+end_src
 
@@ -2246,6 +2516,18 @@ Elements being converted:
   (let [removable [:cx :cy :transform :width :height :x :y :d :fill-rule]]
     (apply dissoc (concat [props] removable))))
 
+(defn- parse-transform
+  [tf-str]
+  (let [xf (svg-clj.utils/str->xf-map tf-str)
+        tr (:translate xf)
+        rot (:rotate xf)
+        angle (last rot)]
+    [(fn [elem]
+       (cond-> elem
+         rot (mdl/rotate [0 0 angle])
+         tr (mdl/translate tr)))
+     xf]))
+
 (defmethod svg->mdl :list
   [elems]
   (map svg->mdl elems))
@@ -2259,7 +2541,7 @@ Elements being converted:
     (cond-> (mdl/circle r)
       true (mdl/style xf-props)
       (and (not= cx 0)
-           (not= cy 0)) (mdl/translate [cx (- cy) 0]))))
+           (not= cy 0)) (mdl/translate [cx cy 0]))))
 
 (defmethod svg->mdl :ellipse
   [[_ {:keys [cx cy rx ry] :as props}]]
@@ -2274,7 +2556,7 @@ Elements being converted:
   [[_ {:keys [x1 y1 x2 y2] :as props}]]
   (let [[x1 y1 x2 y2] (map read-string [x1 y1 x2 y2])
         xf-props (clean-props props)]
-    (-> (mdl/line [x1 (- y1) 0] [x2 (- y2) 0])
+    (-> (mdl/line [x1 y1 0] [x2 y2 0])
         (mdl/style xf-props))))
 
 (defmethod svg->mdl :polyline
@@ -2283,7 +2565,7 @@ Elements being converted:
         pts (->> points
                  s->v
                  (partition 2))]
-    (-> (mdl/polyline (flip-y pts))
+    (-> (mdl/polyline pts)
         (mdl/style xf-props))))
 
 (defmethod svg->mdl :polygon
@@ -2292,15 +2574,19 @@ Elements being converted:
         pts (->> points
                  s->v
                  (partition 2))]
-    (-> (mdl/polygon (flip-y pts))
+    (-> (mdl/polygon pts)
         (mdl/style xf-props))))
 
 (defmethod svg->mdl :rect
-  [[_ {:keys [width height x y] :as props}]]
+  [[_ {:keys [width height x y transform] :as props}]]
   (let [[width height x y] (map read-string [width height x y])
+        [xf xf-map] (parse-transform transform)
+        angle (last (:rotate xf-map))
         xf-props (clean-props props)
-        pos (utils/v+ [x (- y)] [(/ width 2.0) (/ height -2.0)])]
+        pos (-> (utils/v+ [x y] [(/ width 2.0) (/ height 2.0)])
+                (utils/rotate-point [0 0 angle]))]
     (-> (mdl/rect width height)
+        xf
         (mdl/style xf-props)
         (mdl/translate (conj pos 0)))))
 
@@ -2313,13 +2599,17 @@ Elements being converted:
   [elem]
   (reduce * (tf/bb-dims elem)))
 
+(defn path->pts
+  [path-elem]
+  (let [cmds (path/path-string->commands (get-in path-elem [1 :d]))]
+    (into [] (filter some? (map :input cmds)))))
+
 (defn- svg-path-elem->polygon
   [path-elem]
   (let [pgs (->> path-elem
-                 split-path 
+                 tf/split-path 
                  (sort-by bb-area)
-                 (map path->pts) 
-                 (map flip-y)
+                 (map path->pts)
                  (map mdl/polygon)
                  reverse)]
     (if (> (count pgs) 1)
@@ -2329,10 +2619,9 @@ Elements being converted:
 (defn- svg-path-elem->polyline
   [path-elem]
   (let [pgs (->> path-elem
-                 split-path 
+                 tf/split-path 
                  (sort-by bb-area)
-                 (map path->pts) 
-                 (map flip-y) 
+                 (map path->pts)
                  (map mdl/polyline)
                  reverse)]
     (if (> (count pgs) 1)
@@ -2355,11 +2644,10 @@ Elements being converted:
   [fname & {:keys [r]}]
   (-> fname
       img->str
-      str->elements
+      svg-str->elements
       re-center
-      (->> (mapcat split-path))
+      (->> (mapcat tf/split-path))
       (->> (map path->pts))
-      (->> (map flip-y))
       (->> (map #(mdl/polyline %)))
       mdl/union))
 
@@ -2367,7 +2655,7 @@ Elements being converted:
   [fname]
   (-> fname
       img->str
-      str->elements
+      svg-str->elements
       re-center
       (->> (map svg-path-elem->polygon))
       mdl/union))
@@ -2376,7 +2664,7 @@ Elements being converted:
   [fname]
   (-> fname
       slurp
-      str->elements
+      svg-str->elements
       (->> (map svg->mdl))
       (->> (filter some?))))
 
@@ -2411,6 +2699,7 @@ This is based off of Matthew Farrell's work on scad-clj. The code is modified in
   (:require [clojure.java.shell :refer [sh]]
             [clojure.string :as str]
             [forge.utils :as utils]
+            [svg-clj.utils :refer [svg-str->elements]]
             [forge.model :as mdl]))
 
 #+end_src
@@ -2674,8 +2963,8 @@ This is based off of Matthew Farrell's work on scad-clj. The code is modified in
             rotate-angle (utils/to-deg (Math/acos (/ dz norm)))
             rotate-axis [(- dy) dx 0]]
         (-> (mdl/union
-             (mdl/sphere r)
              (-> (mdl/sphere r) (mdl/translate a))
+             (-> (mdl/sphere r) (mdl/translate b))
              (-> (mdl/cylinder r norm)
                  (mdl/translate [0 0 (/ norm 2)])
                  (mdl/rotate rotate-angle rotate-axis)
@@ -2739,7 +3028,7 @@ This is based off of Matthew Farrell's work on scad-clj. The code is modified in
            :in scad)))
    )
 
-#?(:clj   
+#?(:clj
    (defn cider-show
      [mdl-data]
      (let [fname "_imgtmp.png"]
@@ -2747,17 +3036,16 @@ This is based off of Matthew Farrell's work on scad-clj. The code is modified in
            (clojure.java.io/file fname))))
    )
 
-
 #?(:clj 
    (defn mdl->svg
      [mdl]
      (let [scad (str "$fn=200;\n" (write mdl))
            fname (str (gensym "tmp") ".svg")]
        (do (sh "openscad" "/dev/stdin" "-o" fname :in scad)
-           (let [svg (slurp fname)]
+           (let [svg-str (slurp fname)]
              (do (sh "rm" fname)
                  (rest 
-                  (forge.import.image/str->elements svg)))))))
+                  (svg-str->elements svg-str)))))))
    )
 #+end_src
 
@@ -2899,6 +3187,7 @@ A namespace for playing around with fns
             [forge.import.image :as img]
             [forge.compile.scad :as scad]))
 
+
 (def a (-> (mdl/circle 20) 
            (mdl/extrude 100)))
 (def b (-> (mdl/circle 20)
@@ -2909,10 +3198,10 @@ A namespace for playing around with fns
            (mdl/translate [80 0 0])
            (mdl/revolve 360)))
 
-(def d (-> (img/import "sk.svg")
-           #_(mdl/extrude 20)))
+(def d (-> (img/import "sk.svg")))
 
-(scad/cider-show d)
-(spit "forge.scad" (scad/write plate))
+(scad/cider-show a)
+(scad/cider-show b)
+(spit "forge.scad" (scad/write d))
 
 #+end_src

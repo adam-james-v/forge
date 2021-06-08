@@ -5,11 +5,13 @@
             [svg-clj.elements :as svg]
             [svg-clj.path :as path]
             [svg-clj.transforms :as tf]
-            [svg-clj.utils :refer [s->v]]
+            [svg-clj.utils :refer [s->v
+                                   svg-str->elements]]
             [forge.model :as mdl]
             [forge.utils :as utils]))
 
-(defn img->str [fname]
+(defn img->str 
+  [fname]
   "Ingest image file `fname` and transform it into a hiccup data structure."
   (let [new-fname (str (first (str/split fname #"\.")) ".svg")]
     (sh "vtracer" 
@@ -24,31 +26,6 @@
           (str/replace #"<\?xml.+>" "")
           str/trim))))
 
-;; xml parse/transform technique is from:
-;; https://github.com/babashka/babashka/blob/master/examples/portal.clj
-(defn xml->hiccup [xml]
-  (if-let [t (:tag xml)]
-    (let [elt [t]
-          elt (if-let [attrs (:attrs xml)]
-                (conj elt attrs)
-                elt)]
-      (into elt (map xml->hiccup (:content xml))))
-    xml))
-
-(defn str->elements
-  [str]
-  (-> str
-      (xml/parse-str :namespace-aware false)
-      xml->hiccup
-      (->> (drop 2))))
-
-(defn split-path
-  [[k props]]
-  (let [ps (-> (:d props)
-               (str/split #"(?=M)")
-               (->> (map str/trim)))]
-    (map #(assoc-in [k props] [1 :d] %) ps)))
-
 (defn- closed?
   [path]
   (let [d (get-in path [1 :d])]
@@ -57,21 +34,12 @@
         str/upper-case
         (str/ends-with? "Z"))))
 
-(defn path->pts
-  [path-elem]
-  (let [cmds (path/path-string->commands (get-in path-elem [1 :d]))]
-    (into [] (filter some? (map :input cmds)))))
-
 (defn re-center
   [seq]
   (let [group (svg/g seq)
         ctr (mapv float (tf/centroid group))]
     (->> seq
          (map #(tf/translate % (utils/v* [-1 -1] ctr))))))
-
-(defn flip-y
-  [pts]
-  (map #(utils/v* % [1 -1]) pts))
 
 (defmulti svg->mdl
   (fn [element]
@@ -83,6 +51,18 @@
   [props]
   (let [removable [:cx :cy :transform :width :height :x :y :d :fill-rule]]
     (apply dissoc (concat [props] removable))))
+
+(defn- parse-transform
+  [tf-str]
+  (let [xf (svg-clj.utils/str->xf-map tf-str)
+        tr (:translate xf)
+        rot (:rotate xf)
+        angle (last rot)]
+    [(fn [elem]
+       (cond-> elem
+         rot (mdl/rotate [0 0 angle])
+         tr (mdl/translate tr)))
+     xf]))
 
 (defmethod svg->mdl :list
   [elems]
@@ -97,7 +77,7 @@
     (cond-> (mdl/circle r)
       true (mdl/style xf-props)
       (and (not= cx 0)
-           (not= cy 0)) (mdl/translate [cx (- cy) 0]))))
+           (not= cy 0)) (mdl/translate [cx cy 0]))))
 
 (defmethod svg->mdl :ellipse
   [[_ {:keys [cx cy rx ry] :as props}]]
@@ -112,7 +92,7 @@
   [[_ {:keys [x1 y1 x2 y2] :as props}]]
   (let [[x1 y1 x2 y2] (map read-string [x1 y1 x2 y2])
         xf-props (clean-props props)]
-    (-> (mdl/line [x1 (- y1) 0] [x2 (- y2) 0])
+    (-> (mdl/line [x1 y1 0] [x2 y2 0])
         (mdl/style xf-props))))
 
 (defmethod svg->mdl :polyline
@@ -121,7 +101,7 @@
         pts (->> points
                  s->v
                  (partition 2))]
-    (-> (mdl/polyline (flip-y pts))
+    (-> (mdl/polyline pts)
         (mdl/style xf-props))))
 
 (defmethod svg->mdl :polygon
@@ -130,15 +110,19 @@
         pts (->> points
                  s->v
                  (partition 2))]
-    (-> (mdl/polygon (flip-y pts))
+    (-> (mdl/polygon pts)
         (mdl/style xf-props))))
 
 (defmethod svg->mdl :rect
-  [[_ {:keys [width height x y] :as props}]]
+  [[_ {:keys [width height x y transform] :as props}]]
   (let [[width height x y] (map read-string [width height x y])
+        [xf xf-map] (parse-transform transform)
+        angle (last (:rotate xf-map))
         xf-props (clean-props props)
-        pos (utils/v+ [x (- y)] [(/ width 2.0) (/ height -2.0)])]
+        pos (-> (utils/v+ [x y] [(/ width 2.0) (/ height 2.0)])
+                (utils/rotate-point [0 0 angle]))]
     (-> (mdl/rect width height)
+        xf
         (mdl/style xf-props)
         (mdl/translate (conj pos 0)))))
 
@@ -151,13 +135,17 @@
   [elem]
   (reduce * (tf/bb-dims elem)))
 
+(defn path->pts
+  [path-elem]
+  (let [cmds (path/path-string->commands (get-in path-elem [1 :d]))]
+    (into [] (filter some? (map :input cmds)))))
+
 (defn- svg-path-elem->polygon
   [path-elem]
   (let [pgs (->> path-elem
-                 split-path 
+                 tf/split-path 
                  (sort-by bb-area)
-                 (map path->pts) 
-                 (map flip-y)
+                 (map path->pts)
                  (map mdl/polygon)
                  reverse)]
     (if (> (count pgs) 1)
@@ -167,10 +155,9 @@
 (defn- svg-path-elem->polyline
   [path-elem]
   (let [pgs (->> path-elem
-                 split-path 
+                 tf/split-path 
                  (sort-by bb-area)
-                 (map path->pts) 
-                 (map flip-y) 
+                 (map path->pts)
                  (map mdl/polyline)
                  reverse)]
     (if (> (count pgs) 1)
@@ -189,11 +176,10 @@
   [fname & {:keys [r]}]
   (-> fname
       img->str
-      str->elements
+      svg-str->elements
       re-center
-      (->> (mapcat split-path))
+      (->> (mapcat tf/split-path))
       (->> (map path->pts))
-      (->> (map flip-y))
       (->> (map #(mdl/polyline %)))
       mdl/union))
 
@@ -201,7 +187,7 @@
   [fname]
   (-> fname
       img->str
-      str->elements
+      svg-str->elements
       re-center
       (->> (map svg-path-elem->polygon))
       mdl/union))
@@ -210,7 +196,7 @@
   [fname]
   (-> fname
       slurp
-      str->elements
+      svg-str->elements
       (->> (map svg->mdl))
       (->> (filter some?))))
 

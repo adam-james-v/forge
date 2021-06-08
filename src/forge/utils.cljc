@@ -6,10 +6,10 @@
   "compare two float values for approximate equality.
    
    Default epsilon = 0.00001"
-  ([a b]
+  ([^long a ^long b]
    (nearly? a b 0.00001))
 
-  ([a b epsilon]
+  ([^long a ^long b ^long epsilon]
    (let [a (float a)
          b (float b)]
      (if (= a b)
@@ -31,11 +31,15 @@
   (if (not (= (count coll-a) (count coll-b)))
     #?(:clj  (throw (Exception. "collections must be same size."))
        :cljs (throw (js/Error. "collections must be same size.")))
-    (let [diffs (mapv #(float (Math/abs (- %1 %2))) coll-a coll-b)]
+    (let [diffs (mapv #(float (Math/abs ^long (- %1 %2))) coll-a coll-b)]
       (empty? 
        (filter 
         false? 
         (map zeroish? diffs))))))
+
+(def v+ (partial mapv +))
+(def v- (partial mapv -))
+(def v* (partial mapv *))
 
 (defn to-deg
   [rad]
@@ -79,9 +83,9 @@
   [pt]
   (conj (vec pt) 0))
 
-(def v+ (partial mapv +))
-(def v- (partial mapv -))
-(def v* (partial mapv *))
+(defn flip-y
+  [pts]
+  (map #(v* % [1 -1]) pts))
 
 (defn vec-diff
   "returns the collection difference of two vectors"
@@ -105,15 +109,14 @@
   [a b]
   (reduce push-new a b)) 
 
-(defn position
+#_(defn position
   "returns index of first match to item in the src vector. Otherwise nil"
   [src item]
   (let [res (.indexOf src item)]
-    (if (>= res 0)
-      res
-      nil)))
+    (when (>= res 0)
+      res)))
 
-(defn link
+#_(defn link
   "Swap an item for it's index in a different list"
   [src item]
   (let [type-k (first item)
@@ -162,12 +165,12 @@
   [a b]
   (let [v (v- b a)
         v2 (reduce + (v* v v))]
-    (Math/sqrt v2)))
+    (Math/sqrt ^double v2)))
 
 (defn normalize
   "find the unit vector of a given vector"
   [v]
-  (let [m (Math/sqrt (reduce + (v* v v)))]
+  (let [m (Math/sqrt ^double (reduce + (v* v v)))]
     (mapv / v (repeat m))))
 
 (defn on-line?
@@ -194,7 +197,8 @@
     (all-nearly? (cross* ap bp) [0 0 0])))
 
 (defn sin-cos-pair [theta]
-  [(Math/sin (to-rad theta)) (Math/cos (to-rad theta))])
+  [(Math/sin ^long (to-rad theta))
+   (Math/cos ^long (to-rad theta))])
 
 (defn rot-pt-2d
   [[x y] theta]
@@ -232,7 +236,7 @@
   [pt plane]
   (let [a (map - pt (first plane))
         n (normal (first plane) (second plane) (nth plane 2))]
-    (nearly? (Math/abs (dot* a n)) 0)))
+    (nearly? (Math/abs ^long (dot* a n)) 0)))
 
 (defn plane-triple
   "gets a list of 3 points on a plane from a list of points"
@@ -279,9 +283,9 @@
         l1 (distance p1 p2)
         l2 (distance p3 p2)
         n (dot* v1 v2)
-        d (Math/abs (* l1 l2))]
+        d (Math/abs ^long (* l1 l2))]
     (when (not (= 0.0 (float d)))
-      (to-deg (Math/acos (/ n d))))))
+      (to-deg (Math/acos ^long (/ n d))))))
 
 ;; https://math.stackexchange.com/a/1743505
 (defn center-from-pts
