@@ -12,23 +12,12 @@
 #+NAME: deps.edn
 #+begin_src clojure :tangle ./deps.edn
 {:deps 
- {org.clojure/clojure            {:mvn/version "1.10.2"}
-  org.clojure/clojurescript      {:mvn/version "1.10.597"}
+ {org.clojure/clojure            {:mvn/version "1.10.3"}
   org.clojure/test.check         {:mvn/version "0.9.0"}
   org.clojure/math.numeric-tower {:mvn/version "0.0.4"}
-  org.clojure/core.logic         {:mvn/version "0.8.11"}
-  net.mikera/core.matrix         {:mvn/version "0.62.0"}
-  com.climate/claypoole          {:mvn/version "1.1.4"}
   hiccup/hiccup                  {:mvn/version "2.0.0-alpha2"}
-  hawk/hawk                      {:mvn/version "0.2.11"}
   same/ish                       {:mvn/version "0.1.4"}
-  svg-clj/svg-clj                {:local/root "/Users/adam/dev/svg-clj"}
-  #_occjava #_{:local/root  "./resources/occjava.jar"}}
-
- :paths ["src" "resources"]
-
- :aliases
- {:base {:jvm-opts ["-Djava.library.path=/usr/local/lib:./resources:"]}}}
+  svg-clj/svg-clj                {:local/root "/Users/adam/dev/svg-clj"}}}
 
 #+end_src
 
@@ -2067,6 +2056,29 @@ As well, any polygon union should effectively produce the same polygon that woul
 
 #+END_SRC
 
+** bezier
+Eventually I want to generalize bezier fn to take any number of control points, but for the time being it's easier to implement cubic/quadratic bezier curves, as they have simplified algorithms.
+
+#+BEGIN_SRC clojure :tangle ./src/forge/brep.cljc
+(defn- quadratic-bezier
+  [a b c]
+  (fn [t]
+    (let [l1 (line a b)
+          l2 (line b c)
+          l3 (line (l1 t) (l2 t))]
+      (l3 t))))
+
+(defn bezier
+  [pts]
+  (if (= 3 (count pts))
+    (apply quadratic-bezier pts)
+    (let [lines (map #(apply line %) (partition 2 1 pts))] 
+      (fn [t]
+        (let [npts (map #(% t) lines)]
+          ((bezier npts) t))))))
+
+#+END_SRC
+
 ** triangle
 [[https://www.iquilezles.org/www/articles/distfunctions2d/distfunctions2d.htm]]
 
@@ -2442,6 +2454,7 @@ This is just copy pasted from scad-drawing project. The intent here is to have a
   (:require [clojure.java.shell :refer [sh]]
             [clojure.string :as str]
             [clojure.data.xml :as xml]
+            [clojure.core :exclude [import]]
             [svg-clj.elements :as svg]
             [svg-clj.path :as path]
             [svg-clj.transforms :as tf]
@@ -2536,8 +2549,7 @@ Elements being converted:
 
 (defmethod svg->mdl :circle
   [[_ {:keys [cx cy r] :as props}]]
-  (let [[cx cy r] (map read-string [cx cy r])
-        xf-props (clean-props props)]
+  (let [xf-props (clean-props props)]
     (cond-> (mdl/circle r)
       true (mdl/style xf-props)
       (and (not= cx 0)
@@ -2545,8 +2557,7 @@ Elements being converted:
 
 (defmethod svg->mdl :ellipse
   [[_ {:keys [cx cy rx ry] :as props}]]
-  (let [[cx cy rx ry] (map read-string [cx cy rx ry])
-        xf-props (clean-props props)]
+  (let [xf-props (clean-props props)]
     (cond-> (mdl/ellipse rx ry)
       true (mdl/style xf-props)
       (and (not= cx 0)
@@ -2554,8 +2565,7 @@ Elements being converted:
 
 (defmethod svg->mdl :line
   [[_ {:keys [x1 y1 x2 y2] :as props}]]
-  (let [[x1 y1 x2 y2] (map read-string [x1 y1 x2 y2])
-        xf-props (clean-props props)]
+  (let [xf-props (clean-props props)]
     (-> (mdl/line [x1 y1 0] [x2 y2 0])
         (mdl/style xf-props))))
 
@@ -2579,9 +2589,8 @@ Elements being converted:
 
 (defmethod svg->mdl :rect
   [[_ {:keys [width height x y transform] :as props}]]
-  (let [[width height x y] (map read-string [width height x y])
-        [xf xf-map] (parse-transform transform)
-        angle (last (:rotate xf-map))
+  (let [[xf xf-map] (parse-transform transform)
+        angle (last (get xf-map :rotate [0]))
         xf-props (clean-props props)
         pos (-> (utils/v+ [x y] [(/ width 2.0) (/ height 2.0)])
                 (utils/rotate-point [0 0 angle]))]
@@ -2616,6 +2625,15 @@ Elements being converted:
       (apply mdl/difference pgs)
       (first pgs))))
 
+(defn- svg-path-elem->polyline2
+  [path-elem]
+  (let [pgs (->> path-elem
+                 #_tf/split-path 
+                 #_(sort-by bb-area)
+                 path->pts
+                 mdl/polyline)]
+    pgs))
+
 (defn- svg-path-elem->polyline
   [path-elem]
   (let [pgs (->> path-elem
@@ -2630,10 +2648,11 @@ Elements being converted:
 
 (defmethod svg->mdl :path
   [[_ props :as elem]]
-  (let [xf-props (clean-props props)]
+  (let [xf-props (clean-props props)
+        xf-elem elem (tf/decurve elem)]
     (-> (if (closed? elem)
-          (svg-path-elem->polygon elem)
-          (svg-path-elem->polyline elem))
+          (svg-path-elem->polygon xf-elem)
+          (svg-path-elem->polyline xf-elem))
         (mdl/style xf-props))))
 
 #+end_src
@@ -2645,6 +2664,7 @@ Elements being converted:
   (-> fname
       img->str
       svg-str->elements
+      (->> (drop 2))
       re-center
       (->> (mapcat tf/split-path))
       (->> (map path->pts))
@@ -2656,17 +2676,18 @@ Elements being converted:
   (-> fname
       img->str
       svg-str->elements
+      (->> (drop 2))
       re-center
       (->> (map svg-path-elem->polygon))
       mdl/union))
 
 (defn import-svg
   [fname]
-  (-> fname
-      slurp
-      svg-str->elements
-      (->> (map svg->mdl))
-      (->> (filter some?))))
+  (let [data (-> (slurp fname) svg-str->elements)
+        elems (if (= :svg (first data)) (drop 2 data) data)]
+    (->> elems
+         (map svg->mdl)
+         (filter some?))))
 
 (defn import
   [fname]
@@ -2677,7 +2698,9 @@ Elements being converted:
 
 #+end_src
 
-* compilers
+[[./_tmp.svg]]
+
+* compiler
 A collection of methods for exporting models.
 
 ** scad
@@ -2875,12 +2898,10 @@ This is based off of Matthew Farrell's work on scad-clj. The code is modified in
 
 (defmethod write-expr :offset
   [depth [_ {:keys [d]} elem]]
-  (list (indent depth) 
-        "offset (r = " d
-        "){\n"
-        (write-expr (inc depth) elem)
-        (indent depth) 
-        "}\n"))
+  (concat 
+   (list (indent depth) "offset (r = " d "){\n")
+   (write-expr (inc depth) elem)
+   (list (indent depth) "}\n")))
 
 (defmethod write-expr :minkowski
   [depth [_ _ elems]]
@@ -2957,7 +2978,7 @@ This is based off of Matthew Farrell's work on scad-clj. The code is modified in
         a (if (< (count a) 3) (forge.utils/add-z a) a)
         b (if (< (count b) 3) (forge.utils/add-z b) b)]
     (if (= a b)
-      (mdl/sphere r)
+      (-> (mdl/sphere r) (mdl/translate a))
       (let [[dx dy dz] (utils/v- a b)
             norm (utils/distance b a)
             rotate-angle (utils/to-deg (Math/acos (/ dz norm)))
@@ -3014,40 +3035,509 @@ This is based off of Matthew Farrell's work on scad-clj. The code is modified in
 #+end_src
 
 *** tools
+If you need to display images in the CIDER Repl, you have to make sure that cider-repl-use-content-types is true
+
+~(setq cider-repl-use-content-types t)~
+
+Which you can toggle with:
+
+~M-x cider-repl-toggle-content-types~
+
+**** TODO: fix openscad alias issue with sh call
+
 #+begin_src clojure :tangle ./src/forge/compile/scad.cljc
-#?(:clj
-   (defn png!
-     [fname mdl-data]
-     (let [scad (write [#_(fn! 20) mdl-data])]
-       (sh "openscad" "/dev/stdin"
-           "--imgsize" "400,400"
-           "--projection" "orthogonal"
-           "--colorscheme" #_"greenscreen" "Nord"
-           #_"--camera" #_"0,0,0,55,0,25,2900"
-           "-o" fname
-           :in scad)))
-   )
+(defn png!
+  [fname mdl-data]
+  (let [scad (write [#_(fn! 20) mdl-data])]
+    (sh "/usr/local/bin/openscad" "/dev/stdin"
+        "--imgsize" "400,400"
+        "--projection" "orthogonal"
+        #_"--colorscheme" #_"greenscreen" #_"Nord"
+        #_"--camera" #_"0,0,0,55,0,25,2900"
+        "-o" fname
+        :in scad)))
 
-#?(:clj
-   (defn cider-show
-     [mdl-data]
-     (let [fname "_imgtmp.png"]
-       (do (png! fname mdl-data)
-           (clojure.java.io/file fname))))
-   )
+(defn cider-show
+  [mdl-data]
+  (let [fname "_tmp.png"]
+    (do (png! fname mdl-data)
+        (clojure.java.io/file fname))))
 
-#?(:clj 
-   (defn mdl->svg
-     [mdl]
-     (let [scad (str "$fn=200;\n" (write mdl))
-           fname (str (gensym "tmp") ".svg")]
-       (do (sh "openscad" "/dev/stdin" "-o" fname :in scad)
-           (let [svg-str (slurp fname)]
-             (do (sh "rm" fname)
-                 (rest 
-                  (svg-str->elements svg-str)))))))
-   )
+(defn mdl->svg
+  [mdl]
+  (let [scad (str "$fn=200;\n" (write mdl))
+        fname (str (gensym "tmp") ".svg")]
+    (do (sh "openscad" "/dev/stdin" "-o" fname :in scad)
+        (let [svg-str (slurp fname)]
+          (do (sh "rm" fname)
+              (rest 
+               (svg-str->elements svg-str)))))))
 #+end_src
+
+** freecad-script
+*** ns
+#+begin_src clojure :tangle ./src/forge/compile/freecad.cljc
+(ns forge.compile.freecad
+  (:require [clojure.java.shell :refer [sh]]
+            [clojure.string :as str]
+            [clojure.core.matrix]
+            [forge.utils :as utils]
+            [forge.model :as mdl]))
+
+#+end_src
+
+*** utils
+#+begin_src clojure :tangle ./src/forge/compile/freecad.cljc
+(defn get-name
+  [s]
+  (-> s
+      str/split-lines
+      last
+      (str/split #"=")
+      first
+      str/trim))
+
+(defn vecstr
+  [v]
+  (str "Vector(" (str/join ", " v) ")"))
+
+(defn mtxstr
+  [[& vs]]
+  (str "Matrix(" (str/join ", " (apply concat vs)) ")"))
+
+(defn vecrot
+  [v]
+  (vec (concat (drop 1 v) (take 1 v))))
+
+#+end_src
+
+*** write-expr
+#+begin_src clojure :tangle ./src/forge/compile/freecad.cljc
+(defmulti write-expr
+  (fn [[form & args]]
+    (if (keyword? form) form :list)))
+
+(defmethod write-expr :default
+  [[form & args]]
+  ["//(" form args ")"])
+
+(defmethod write-expr :list
+  [forms]
+  (str/join "\n" (map write-expr forms)))
+
+(defn write-block
+  [block]
+  (mapcat write-expr block))
+
+(declare map-to-arg-string)
+
+(defn make-arguments [args]
+  (let [arg (first args)
+        rest (rest args)
+        piece (cond
+               (map? arg) (map-to-arg-string arg)
+               (coll? arg) (str "[" (make-arguments arg) "]")
+               :else arg)]
+    (if (empty? rest)
+      piece
+      (str/join ", " [piece (make-arguments rest)]))))
+
+(defn map-to-arg-string [m]
+  (str/join ", " (map (fn [[k v]] (str (name k) "=" (make-arguments [v])) ) m)))
+
+#+end_src
+
+*** boilerplate
+The postamble has some filepath code which I found from here:
+
+[[https://stackoverflow.com/a/595317]] (user jon-w)
+
+#+begin_src clojure :tangle ./src/forge/compile/freecad.cljc
+(def fcs-preamble
+  "import FreeCAD
+from FreeCAD import Base, Vector, Matrix, Placement, Rotation
+from math import pi, sin, cos
+
+import Part
+import Sketcher
+import Import
+import sys, os
+
+doc = FreeCAD.activeDocument()
+doc_name = \"freecad_clj\"
+
+def clear_doc():
+    for obj in doc.Objects:
+        doc.removeObject(obj.Name)
+
+def setview():
+    FreeCAD.Gui.SendMsgToActiveView(\"ViewFit\")
+    FreeCAD.Gui.activeDocument().activeView().viewAxometric()
+
+if doc is None:
+    FreeCAD.newDocument(doc_name)
+    FreeCAD.setActiveDocument(doc_name)
+    doc = FreeCAD.activeDocument()
+else:
+    clear_doc()
+
+# EPS= tolerance to use to cut the parts
+EPS = 0.10
+EPS_C = EPS * -0.5\n\n")
+
+(def fcs-postamble
+  "doc.recompute()
+
+pathname = os.path.dirname(sys.argv[0])
+stepname = os.path.abspath(pathname) + \"/out.step\"
+fcname = os.path.abspath(pathname) + \"/out.FCStd\"
+
+#Import.export(doc.RootObjects, stepname)
+#doc.saveAs(fcname)")
+
+#+end_src
+
+*** 2D
+**** circle
+ Start with a circle.
+
+ doc.addObject('Sketcher::SketchObject','sk1')
+ doc.sk1.addGeometry(Part.Circle(App.Vector(0.000000,0.000000,0),App.Vector(0,0,1),10),False)
+ doc.recompute()
+
+ #+begin_src clojure :tangle ./src/forge/compile/freecad.cljc
+ (defmethod write-expr :circle
+   [[_ {:keys [r]}]]
+   (let [name (gensym "sk_circle_")]
+     (str name " = " "Part.makeCircle(" r  ")")))
+
+ #+end_src
+
+**** polygon
+ geoList = []
+ geoList.append(Part.LineSegment(App.Vector(-5.235079,-4.280038,0),App.Vector(4.496150,-4.280038,0)))
+ geoList.append(Part.LineSegment(App.Vector(4.496150,-4.280038,0),App.Vector(4.496150,6.009032,0)))
+ geoList.append(Part.LineSegment(App.Vector(4.496150,6.009032,0),App.Vector(-5.235079,6.009032,0)))
+ geoList.append(Part.LineSegment(App.Vector(-5.235079,6.009032,0),App.Vector(-5.235079,-4.280038,0)))
+
+
+ Sketcher.Constraint('Coincident',1,2,2,1)
+ App.ActiveDocument.sk_7085.addConstraint(conList)
+
+ App.ActiveDocument.sk_7085.addGeometry(geoList,False)
+
+ #+begin_src clojure :tangle ./src/forge/compile/freecad.cljc
+ (defn line-segment
+   [[a b]]
+   (str "Part.LineSegment(" (str/join ", " (map vecstr [a b])) ")"))
+
+ (defn coincident-constraint
+   [[ia ib]]
+   (str "Sketcher.Constraint('Coincident'," ia ",2," ib ",1)"))
+
+ (defn build-polygon-old
+   [pts]
+   (let [name (gensym "sk_")
+         indices (partition 2 1 (conj (vec (range (count pts))) 0))
+         lines (partition 2 1 (conj pts (first pts)))]
+     (apply str [name " = doc.addObject('Sketcher::SketchObject','" name "')\n"
+                 "doc." name ".addGeometry(["
+                 (str/join "," (map line-segment lines))
+                 "],False)\n\n"
+                 "doc." name ".addConstraint(["
+                 (str/join "," (map coincident-constraint indices))
+                 "])\n"])))
+
+ (defn build-polygon
+   [pts]
+   (let [pts (conj pts (first pts))]
+     (str "Part.makePolygon(["
+          (str/join ", " (map vecstr pts))
+          "])")))
+
+ (defmethod write-expr :polygon
+   [[_ {:keys [pts]}]]
+   (let [name (gensym "sk_polygon_")]
+     (str name " = " (build-polygon pts))))
+
+ #+end_src
+
+**** square
+ Use the polygon fn to create a square.
+
+ #+begin_src clojure :tangle ./src/forge/compile/freecad.cljc
+ (defmethod write-expr :square
+   [[_ {:keys [x y]}]]
+   (let [pts [[(/ x -2) (/ y -2) 0] [(/ x 2)  (/ y -2) 0]
+              [(/ x 2)  (/ y 2)  0] [(/ x -2) (/ y 2)  0]]
+         name (gensym "sk_sq_")]
+     (str name " = " (build-polygon pts))))
+
+ #+end_src
+
+*** 3D
+**** sphere
+ doc.addObject("Part::Sphere","Sphere")
+ doc.getObject("Sphere").Radius = '10'
+
+ #+begin_src clojure :tangle ./src/forge/compile/freecad.cljc
+ (defmethod write-expr :sphere
+   [[_ {:keys [r]}]]
+   (let [name (gensym "sphere_")]
+     (str name " = " "Part.makeSphere(" r ")")))
+
+ #+end_src
+
+**** cube
+ doc.addObject("Part::Box","Box")
+ doc.getObject("Box").Placement = App.Placement(App.Vector(-25.4,0,0),App.Rotation(App.Vector(0,0,1),0))
+
+ #+begin_src clojure :tangle ./src/forge/compile/freecad.cljc
+ (defmethod write-expr :cube
+   [[_ {:keys [x y z]}]]
+   (let [name (gensym "cube_")
+         pos (map #(/ % -2.0) [x y z])]
+     (str name " = " "Part.makeBox(" (str/join ", " [x y z]) ")"
+          ".translate(" (vecstr pos) ")")))
+
+ #+end_src
+
+**** cylinder
+ App.ActiveDocument.addObject("Part::Cylinder","Cylinder")
+
+ #+begin_src clojure :tangle ./src/forge/compile/freecad.cljc
+ (defmethod write-expr :cylinder
+   [[_ {:keys [r h]}]]
+   (let [name (gensym "cylinder_")
+         pos (map #(/ % -2) [0 0 h])]
+     (str name " = " "Part.makeCylinder(" (str/join ", " [r h]) ")"
+          ".translate(" (vecstr pos) ")")))
+
+ #+end_src
+
+**** polyhedron
+ #+begin_src clojure :tangle ./src/forge/compile/freecad.cljc
+ (defn build-face
+   [pts]
+   (str "Part.Face(" (build-polygon pts) ")"))
+
+ (defmethod write-expr :polyhedron
+   [[_ {:keys [pts faces]}]]
+   (let [name (gensym "polyhedron_")
+         get-pts (fn [face] (mapv #(get (vec pts) %) face))
+         faces (mapv get-pts faces)]
+     (str name " = " "Part.makeSolid(Part.makeShell(" 
+          (str/join ", " faces) "))")))
+
+ #+end_src
+
+**** extrude-linear
+ Part.Face(Part.Wire(a)).extrude(FreeCAD.Base.Vector(0,0,10))
+
+ #+begin_src clojure :tangle ./src/forge/compile/freecad.cljc
+ (defmethod write-expr :extrude-linear
+   [[_ {:keys [height]} form]]
+   (let [sk (write-expr form)
+         name (gensym "extrude_")
+         sk-name (get-name sk)]
+     (str sk "\n"
+          name " = " "Part.Face(Part.Wire(" sk-name "))"
+          ".extrude(" (vecstr [0 0 height]) ")")))
+
+ #+end_src
+
+**** extrude-rotate
+ #+begin_src clojure :tangle ./src/forge/compile/freecad.cljc
+ (defmethod write-expr :extrude-rotate
+   [[_ {:keys [angle]} form]]
+   (let [angle (if angle angle 360)
+         sk (write-expr form)
+         name (gensym "revolve_")
+         sk-name (get-name sk)]
+     (str sk "\n"
+          name " = " "Part.Face(Part.Wire(" sk-name "))"
+          ".rotate(" (vecstr [0 0 0]) "," (vecstr [1 0 0]) ", 90" ")"
+          ".revolve(" (vecstr [0 0 0]) "," (vecstr [0 0 1]) "," angle ")")))
+
+ #+end_src
+
+*** transforms
+**** rotation-matrix
+ This is here as reference for if/when I improve how transforms are done. For instance, I could optimize output by baking all transforms down into a single matrix multiplication.
+
+ #+begin_src clojure :tangle ./src/forge/compile/freecad.cljc
+ (defn v* [a b] (mapv * a b))
+
+ (defn normalize
+   "find the unit vector of a given vector"
+   [v]
+   (let [m (Math/sqrt (reduce + (v* v v)))]
+     (mapv / v (repeat m))))
+
+ ;; rotation matrices sourced from:
+ ;; https://sites.google.com/site/glennmurray/Home/rotation-matrices-and-formulas/rotation-about-an-arbitrary-axis-in-3-dimensions
+ ;; zyx-rotation-matrix from section 3
+ ;; axis-rotation-matrix from section 5.2
+
+ (defn axis-rotation-matrix [a [x y z]]
+   (let [[u v w] (normalize [x y z])
+         c #(Math/cos %)
+         s #(Math/sin %)]
+     [[(+ (* u u) (* (- 1 (* u u)) (c a)))
+       (- (* v u (- 1 (c a))) (* w (s a)))
+       (+ (* w u (- 1 (c a))) (* v (s a)))
+       0]
+
+      [(+ (* u v (- 1 (c a))) (* w (s a)))
+       (+ (* v v) (* (- 1 (* v v)) (c a)))
+       (- (* w v (- 1 (c a))) (* u (s a)))
+       0]
+
+      [(- (* u w (- 1 (c a))) (* v (s a)))
+       (+ (* v w (- 1 (c a))) (* u (s a)))
+       (+ (* w w) (* (- 1 (* w w)) (c a)))
+       0]
+
+      [0 0 0 1]]))
+
+ #+end_src
+
+**** translate
+ #+begin_src clojure :tangle ./src/forge/compile/freecad.cljc
+ (defn build-translate
+   [[x y z] form]
+   (str form ".translate(" (vecstr [x y z]) ")"))
+
+ (defmethod write-expr :translate
+   [[_ {:keys [x y z]} forms]]
+   (let [xforms (mapcat str/split-lines (map write-expr forms))]
+     (str/join "\n" (map #(build-translate [x y z] %) xforms))))
+
+ #+end_src
+
+**** rotate
+ #+begin_src clojure :tangle ./src/forge/compile/freecad.cljc
+ (defn build-rotate
+   [a [x y z] form]
+   (str form ".rotate(" (vecstr [0 0 0]) ", " (vecstr [x y z]) ", " a ")"))
+
+ (defmethod write-expr :rotatev
+   [[_ {:keys [a x y z]} forms]]
+   (let [xforms (mapcat str/split-lines (map write-expr forms))]
+     (str/join "\n" (map #(build-rotate a [x y z] %) xforms))))
+
+ (defmethod write-expr :rotatec
+   [[_ {:keys [x y z]} forms]]
+   (let [xforms (map #(->> %
+                           (rotate z [0 0 1])
+                           (rotate y [0 1 0])
+                           (rotate x [1 0 0])) forms)]
+     (str/join "\n" (map write-expr xforms))))
+
+ #+end_src
+
+**** color
+ #+begin_src clojure :tangle ./src/forge/compile/freecad.cljc
+ (defmethod write-expr :color
+   [[_ {:keys [a x y z]} forms]]
+   (str/join "\n" (map write-expr forms)))
+
+ #+end_src
+
+*** boolean-ops
+**** difference
+ Difference takes two elements: the base and the tool. THe base is what remains, the tool is the section that gets cut away.
+
+ doc.addObject("Part::Cut","Cut_Name")
+ doc.Cut_Name.Base = doc.cube_5771
+ doc.Cut_Name.Tool = doc.cylinder_5772
+ doc.hide("cube_5771")
+ doc.hide("cylinder_5772")
+
+ #+begin_src clojure :tangle ./src/forge/compile/freecad.cljc
+ (defn build-cut
+   [str-a str-b]
+   (let [name (gensym "difference_")]
+     (str str-a "\n"
+          str-b "\n"
+          name " = " (get-name str-a) ".cut(" (get-name str-b) ")")))
+
+ (defmethod write-expr :difference
+   [[_ _ forms]]
+   (let [xforms (mapcat str/split-lines (map write-expr forms))]
+     (str (reduce build-cut xforms) ".removeSplitter()")))
+
+ #+end_src
+
+**** union
+ Union takes two elements: the base and the tool. THe base is what remains, the tool is the section that gets cut away.
+
+ doc.addObject("Part::Fuse","Union_Name")
+ doc.Union_Name.Base = doc.cube_5771
+ doc.Union_Name.Tool = doc.cylinder_5772
+
+ #+begin_src clojure :tangle ./src/forge/compile/freecad.cljc
+ (defn build-fuse
+   [str-a str-b]
+   (let [name (gensym "union_")]
+     (str str-a "\n"
+          str-b "\n"
+          name " = " (get-name str-a) ".fuse(" (get-name str-b) ")")))
+
+ (defmethod write-expr :union
+   [[_ _ forms]]
+   (let [xforms (mapcat str/split-lines (map write-expr forms))]
+     (str (reduce build-fuse xforms) ".removeSplitter()")))
+
+ #+end_src
+
+**** intersection
+ Intersection takes two elements: the base and the tool. THe base is what remains, the tool is the section that gets cut away.
+
+ doc.addObject("Part::MultiCommon","intersection_Name")
+ doc.intersection_Name.Shapes = [doc.cube_5771, doc.cylinder_5772]
+
+ #+begin_src clojure :tangle ./src/forge/compile/freecad.cljc
+ (defn build-common
+   [str-a str-b]
+   (let [name (gensym "intersection_")]
+     (str str-a "\n"
+          str-b "\n"
+          name " = " (get-name str-a) ".common(" (get-name str-b) ")")))
+
+ (defmethod write-expr :intersection
+   [[_ _ forms]]
+   (let [xforms (mapcat str/split-lines (map write-expr forms))]
+     (str (reduce build-common xforms) ".removeSplitter()")))
+
+ #+end_src
+
+*** write-fcs
+FreeCAD command line tool is basically just a python interactive shell. So, you can actually use the python CLI flags just fine.
+
+ ~python -c "print('Hello')"~
+
+ Will print 'Hello' because the interpreter executes the string as python code.
+
+ So, I can do the same thing with freecad -c. Then, to export a STEP file, I can actually pass the whole script as a string, bypassing the need to write/del files.
+
+ #+begin_src clojure :tangle ./src/forge/compile/freecad.cljc
+ (defn write-fcs
+   [& blocks]
+   (let [block-strs (map write-expr blocks)
+         names (map #(str "Part.show(" (get-name %) ", '" (gensym "fcs_") "')") block-strs)]
+     (str/join "\n"
+      (concat
+       [fcs-preamble]
+       block-strs
+       names
+       [fcs-postamble]))))
+
+ (defn ->step
+   [block]
+   (sh "freecad" "-c" (write-fcs block)))
+
+ #+end_src
 
 ** svg
 The initial idea for SVG is to represent all shapes with edges and faces using svg-clj.path/polygon-path fn.
@@ -3184,9 +3674,9 @@ A namespace for playing around with fns
 (ns forge.scratch
   (:require [forge.model :as mdl]
             [forge.utils :as utils]
+            [forge.brep :as brep]
             [forge.import.image :as img]
             [forge.compile.scad :as scad]))
-
 
 (def a (-> (mdl/circle 20) 
            (mdl/extrude 100)))
@@ -3195,13 +3685,17 @@ A namespace for playing around with fns
            (mdl/revolve 360)))
 (def c (-> (utils/regular-polygon-pts 30 8)
            (mdl/polygon)
-           (mdl/translate [80 0 0])
-           (mdl/revolve 360)))
-
+           (mdl/translate [180 0 0])
+           (mdl/revolve 180)))
 (def d (-> (img/import "sk.svg")))
 
-(scad/cider-show a)
+(def e (-> (for [t (range 0 1.1 0.1)]
+             ((brep/bezier [[0 0 0] [400 400 400] [700 50 200] [300 -200 100] [30 -500 -100]]) t))
+           (mdl/polyline)))
+
 (scad/cider-show b)
-(spit "forge.scad" (scad/write d))
+#_(scad/cider-show d)
+(scad/cider-show d)
+(spit "forge.scad" (scad/write c))
 
 #+end_src

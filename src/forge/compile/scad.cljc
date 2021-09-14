@@ -158,12 +158,10 @@
 
 (defmethod write-expr :offset
   [depth [_ {:keys [d]} elem]]
-  (list (indent depth) 
-        "offset (r = " d
-        "){\n"
-        (write-expr (inc depth) elem)
-        (indent depth) 
-        "}\n"))
+  (concat 
+   (list (indent depth) "offset (r = " d "){\n")
+   (write-expr (inc depth) elem)
+   (list (indent depth) "}\n")))
 
 (defmethod write-expr :minkowski
   [depth [_ _ elems]]
@@ -228,7 +226,7 @@
         a (if (< (count a) 3) (forge.utils/add-z a) a)
         b (if (< (count b) 3) (forge.utils/add-z b) b)]
     (if (= a b)
-      (mdl/sphere r)
+      (-> (mdl/sphere r) (mdl/translate a))
       (let [[dx dy dz] (utils/v- a b)
             norm (utils/distance b a)
             rotate-angle (utils/to-deg (Math/acos (/ dz norm)))
@@ -278,35 +276,29 @@
 (defn write [& block]
   (str/join (write-expr 0 block)))
 
-#?(:clj
-   (defn png!
-     [fname mdl-data]
-     (let [scad (write [#_(fn! 20) mdl-data])]
-       (sh "openscad" "/dev/stdin"
-           "--imgsize" "400,400"
-           "--projection" "orthogonal"
-           "--colorscheme" #_"greenscreen" "Nord"
-           #_"--camera" #_"0,0,0,55,0,25,2900"
-           "-o" fname
-           :in scad)))
-   )
+(defn png!
+  [fname mdl-data]
+  (let [scad (write [#_(fn! 20) mdl-data])]
+    (sh "/usr/local/bin/openscad" "/dev/stdin"
+        "--imgsize" "400,400"
+        "--projection" "orthogonal"
+        #_"--colorscheme" #_"greenscreen" #_"Nord"
+        #_"--camera" #_"0,0,0,55,0,25,2900"
+        "-o" fname
+        :in scad)))
 
-#?(:clj
-   (defn cider-show
-     [mdl-data]
-     (let [fname "_imgtmp.png"]
-       (do (png! fname mdl-data)
-           (clojure.java.io/file fname))))
-   )
+(defn cider-show
+  [mdl-data]
+  (let [fname "_tmp.png"]
+    (do (png! fname mdl-data)
+        (clojure.java.io/file fname))))
 
-#?(:clj 
-   (defn mdl->svg
-     [mdl]
-     (let [scad (str "$fn=200;\n" (write mdl))
-           fname (str (gensym "tmp") ".svg")]
-       (do (sh "openscad" "/dev/stdin" "-o" fname :in scad)
-           (let [svg-str (slurp fname)]
-             (do (sh "rm" fname)
-                 (rest 
-                  (svg-str->elements svg-str)))))))
-   )
+(defn mdl->svg
+  [mdl]
+  (let [scad (str "$fn=200;\n" (write mdl))
+        fname (str (gensym "tmp") ".svg")]
+    (do (sh "openscad" "/dev/stdin" "-o" fname :in scad)
+        (let [svg-str (slurp fname)]
+          (do (sh "rm" fname)
+              (rest 
+               (svg-str->elements svg-str)))))))

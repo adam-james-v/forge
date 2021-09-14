@@ -85,6 +85,23 @@
   [pts]
   (polyline (conj (vec pts) (first pts))))
 
+(defn- quadratic-bezier
+  [a b c]
+  (fn [t]
+    (let [l1 (line a b)
+          l2 (line b c)
+          l3 (line (l1 t) (l2 t))]
+      (l3 t))))
+
+(defn bezier
+  [pts]
+  (if (= 3 (count pts))
+    (apply quadratic-bezier pts)
+    (let [lines (map #(apply line %) (partition 2 1 pts))] 
+      (fn [t]
+        (let [npts (map #(% t) lines)]
+          ((bezier npts) t))))))
+
 (defn surface-triangle
   [a b c]
   (let [l1 (line b a)

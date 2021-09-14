@@ -2,6 +2,7 @@
   (:require [clojure.java.shell :refer [sh]]
             [clojure.string :as str]
             [clojure.data.xml :as xml]
+            [clojure.core :exclude [import]]
             [svg-clj.elements :as svg]
             [svg-clj.path :as path]
             [svg-clj.transforms :as tf]
@@ -72,8 +73,7 @@
 
 (defmethod svg->mdl :circle
   [[_ {:keys [cx cy r] :as props}]]
-  (let [[cx cy r] (map read-string [cx cy r])
-        xf-props (clean-props props)]
+  (let [xf-props (clean-props props)]
     (cond-> (mdl/circle r)
       true (mdl/style xf-props)
       (and (not= cx 0)
@@ -81,8 +81,7 @@
 
 (defmethod svg->mdl :ellipse
   [[_ {:keys [cx cy rx ry] :as props}]]
-  (let [[cx cy rx ry] (map read-string [cx cy rx ry])
-        xf-props (clean-props props)]
+  (let [xf-props (clean-props props)]
     (cond-> (mdl/ellipse rx ry)
       true (mdl/style xf-props)
       (and (not= cx 0)
@@ -90,8 +89,7 @@
 
 (defmethod svg->mdl :line
   [[_ {:keys [x1 y1 x2 y2] :as props}]]
-  (let [[x1 y1 x2 y2] (map read-string [x1 y1 x2 y2])
-        xf-props (clean-props props)]
+  (let [xf-props (clean-props props)]
     (-> (mdl/line [x1 y1 0] [x2 y2 0])
         (mdl/style xf-props))))
 
@@ -115,9 +113,8 @@
 
 (defmethod svg->mdl :rect
   [[_ {:keys [width height x y transform] :as props}]]
-  (let [[width height x y] (map read-string [width height x y])
-        [xf xf-map] (parse-transform transform)
-        angle (last (:rotate xf-map))
+  (let [[xf xf-map] (parse-transform transform)
+        angle (last (get xf-map :rotate [0]))
         xf-props (clean-props props)
         pos (-> (utils/v+ [x y] [(/ width 2.0) (/ height 2.0)])
                 (utils/rotate-point [0 0 angle]))]
@@ -152,6 +149,15 @@
       (apply mdl/difference pgs)
       (first pgs))))
 
+(defn- svg-path-elem->polyline2
+  [path-elem]
+  (let [pgs (->> path-elem
+                 #_tf/split-path 
+                 #_(sort-by bb-area)
+                 path->pts
+                 mdl/polyline)]
+    pgs))
+
 (defn- svg-path-elem->polyline
   [path-elem]
   (let [pgs (->> path-elem
@@ -166,10 +172,11 @@
 
 (defmethod svg->mdl :path
   [[_ props :as elem]]
-  (let [xf-props (clean-props props)]
+  (let [xf-props (clean-props props)
+        xf-elem elem (tf/decurve elem)]
     (-> (if (closed? elem)
-          (svg-path-elem->polygon elem)
-          (svg-path-elem->polyline elem))
+          (svg-path-elem->polygon xf-elem)
+          (svg-path-elem->polyline xf-elem))
         (mdl/style xf-props))))
 
 (defn line-drawing
@@ -177,6 +184,7 @@
   (-> fname
       img->str
       svg-str->elements
+      (->> (drop 2))
       re-center
       (->> (mapcat tf/split-path))
       (->> (map path->pts))
@@ -188,17 +196,18 @@
   (-> fname
       img->str
       svg-str->elements
+      (->> (drop 2))
       re-center
       (->> (map svg-path-elem->polygon))
       mdl/union))
 
 (defn import-svg
   [fname]
-  (-> fname
-      slurp
-      svg-str->elements
-      (->> (map svg->mdl))
-      (->> (filter some?))))
+  (let [data (-> (slurp fname) svg-str->elements)
+        elems (if (= :svg (first data)) (drop 2 data) data)]
+    (->> elems
+         (map svg->mdl)
+         (filter some?))))
 
 (defn import
   [fname]
