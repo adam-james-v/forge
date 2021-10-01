@@ -134,13 +134,15 @@
 
 (defn path->pts
   [path-elem]
-  (let [cmds (path/path-string->commands (get-in path-elem [1 :d]))]
+  (let [cmds (-> path-elem
+                 (get-in [1 :d])
+                 path/path-str->cmds)]
     (into [] (filter some? (map :input cmds)))))
 
 (defn- svg-path-elem->polygon
   [path-elem]
   (let [pgs (->> path-elem
-                 tf/split-path 
+                 path/split-path
                  (sort-by bb-area)
                  (map path->pts)
                  (map mdl/polygon)
@@ -149,19 +151,10 @@
       (apply mdl/difference pgs)
       (first pgs))))
 
-(defn- svg-path-elem->polyline2
-  [path-elem]
-  (let [pgs (->> path-elem
-                 #_tf/split-path 
-                 #_(sort-by bb-area)
-                 path->pts
-                 mdl/polyline)]
-    pgs))
-
 (defn- svg-path-elem->polyline
   [path-elem]
   (let [pgs (->> path-elem
-                 tf/split-path 
+                 path/split-path 
                  (sort-by bb-area)
                  (map path->pts)
                  (map mdl/polyline)
@@ -173,7 +166,7 @@
 (defmethod svg->mdl :path
   [[_ props :as elem]]
   (let [xf-props (clean-props props)
-        xf-elem elem (tf/decurve elem)]
+        xf-elem (path/decurve elem)]
     (-> (if (closed? elem)
           (svg-path-elem->polygon xf-elem)
           (svg-path-elem->polyline xf-elem))
@@ -186,7 +179,7 @@
       svg-str->elements
       (->> (drop 2))
       re-center
-      (->> (mapcat tf/split-path))
+      (->> (mapcat path/split-path))
       (->> (map path->pts))
       (->> (map #(mdl/polyline %)))
       mdl/union))

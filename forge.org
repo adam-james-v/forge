@@ -21,8 +21,6 @@
 
 #+end_src
 
-OCC works when clj is invoked with clj -A:base.
-
 ** readme
 #+BEGIN_SRC markdown :tangle ./readme.md
 # Forge
@@ -1219,7 +1217,6 @@ My angles-from-pts fn needs to be changed because it will only report the smalle
 #+end_src
 * delaunay
 This is (for now) a copy from:
-
  https://github.com/trystan/delaunay-triangulation
 
  I have to change this to work on 3D points. It currently drops any Z values.
@@ -1233,8 +1230,7 @@ This is (for now) a copy from:
             :cljs #(js/Math.abs %)))
 
 (def pow #?(:clj #(Math/pow %1 %2)
-            :cljs #(Math/pow %1 %2)))
-
+            :cljs #(js/Math/pow %1 %2)))
 
 (defn rand-int-pt
   ([n]
@@ -1319,10 +1315,7 @@ This is (for now) a copy from:
 ** ns
 #+begin_src clojure :tangle ./src/forge/frep.cljc
 (ns forge.frep
-  (:require [clojure.core.matrix :as m]
-            [clojure.core.matrix.operators :as mo]
-            [com.climate.claypoole :as cp]
-            [forge.utils :as utils]
+  (:require [forge.utils :as utils]
             [forge.geom :as geom]
             [forge.delaunay :as delaunay]
             [svg-clj.elements :as svg]
@@ -1636,289 +1629,6 @@ alt conditional for checkign c
     (f (utils/v* pt scales))))
 
 #+END_SRC
-
-** tools
-- tried pcalls and it has similar performance to the pmap approach in prep-fn-grid.
-
-- a hexagon of radius 50 takes about 6seconds to render (2d). this is still too slow... so I haven't moved to making a fast 3D renderer yet.
-
-#+begin_src clojure :tangle ./src/forge/frep.cljc
-(defn prep-fn-grid
-  [x1 y1 x2 y2 f]
-  (let [pts (for [x (range x1 (inc x2))
-                  y (range y1 (inc y2))] [x y])]
-    (cp/pmap 10 #(vector % (f %)) pts)))
-
-(defn render-pt
-  [[pt dist]]
-  (let [dist (utils/round dist 4)
-        r 1
-        a (utils/round 
-           (- 1 (Math/abs ^double (/ (utils/clamp dist (- r) r) r))) 3)]
-    (when (< -1000000 dist r)
-      (svg/g 
-       (-> (svg/rect 1 1)
-           (tf/translate [0.5 0.5])
-           (tf/translate pt)
-           (tf/style {:fill (if (< dist 0)
-                              "slategray"
-                              "none")
-                      :opacity 1 #_(if (< dist (- r)) 1 a)}))
-       (-> (svg/rect 1 1)
-           (tf/translate [0.5 0.5])
-           (tf/translate pt)
-           (tf/style {:fill (if (> dist (- r))
-                              "#ffeeff"
-                              "none")
-                      :opacity a}))))))
-
-(defn prep-fn-grid6
-  [x1 y1 x2 y2 f]
-  (cp/pfor 10 [x (range x1 (inc x2))
-               y (range y1 (inc y2))]
-           (render-pt [[x y] (f [x y])])))
-
-(defn cider-show6
-  [frep]
-  (let [render (remove nil? (prep-fn-grid6 -200 -200 200 200 frep))]
-    (when (not (empty? render))
-      (svg-clj.tools/cider-show render))))
-
-(defn cider-show
-  [frep]
-  (let [grid (prep-fn-grid -200 -200 200 200 frep)
-        render (remove nil? (cp/pmap 10 render-pt grid))]
-    (when (not (empty? render))
-      (svg-clj.tools/cider-show render))))
-
-(defn idx-grid
-  [x1 y1 x2 y2]
-  (m/array :ndarray
-   (for [x (range x1 x2)]
-     (for [y (range y1 y2)]
-       {:x x :y y}))))
-
-(defn array-frep
-  [frep]
-  (fn [pt _]
-    (frep pt)))
-
-(defn render-pt2
-  [pt dist]
-  (let [dist (utils/round dist 4)
-        r 10
-        a (utils/round 
-           (- 1 (Math/abs ^double (/ (utils/clamp dist (- r) r) r))) 3)]
-    (when (< -1000000 dist r)
-      {:result
-      (svg/g 
-       (-> (svg/rect 1 1)
-           (tf/translate [0.5 0.5])
-           (tf/translate pt)
-           (tf/style {:fill (if (< dist 0)
-                              "slategray"
-                              "none")
-                      :opacity 1 #_(if (< dist (- r)) 1 a)}))
-       (-> (svg/rect 1 1)
-           (tf/translate [0.5 0.5])
-           (tf/translate pt)
-           (tf/style {:fill (if (> dist (- r))
-                              "#ffeeff"
-                              "none")
-                      :opacity a})))})))
-
-(defn render-pt3
-  [frep pt dist]
-  (let [dist (utils/round (frep pt) 4)
-        r 10
-        a (utils/round 
-           (- 1 (Math/abs ^double (/ (utils/clamp dist (- r) r) r))) 3)]
-    (when (< -1000000 dist r)
-      {:result
-      (svg/g 
-       (-> (svg/rect 1 1)
-           (tf/translate [0.5 0.5])
-           (tf/translate pt)
-           (tf/style {:fill (if (< dist 0)
-                              "slategray"
-                              "none")
-                      :opacity 1 #_(if (< dist (- r)) 1 a)}))
-       (-> (svg/rect 1 1)
-           (tf/translate [0.5 0.5])
-           (tf/translate pt)
-           (tf/style {:fill (if (> dist (- r))
-                              "#ffeeff"
-                              "none")
-                      :opacity a})))})))
-
-(defn cider-show2
-  [frep]
-  (let [pixels (m/new-array :ndarray [400 400])]
-    (do (m/emap-indexed! (array-frep (translate frep [-200 -200])) pixels)
-        (m/emap-indexed! render-pt2 pixels)
-        (let [spixels (pmap :result (filter some? (apply concat pixels)))]
-          (when (not (empty? spixels))
-            (svg-clj.tools/cider-show spixels))))))
-
-(defn cider-show3
-  [frep]
-  (let [pixels (m/new-array :ndarray [400 400])
-        f (translate frep [-200 -200])
-        spixels (->> pixels
-                     (m/emap-indexed (array-frep f))
-                     (m/emap-indexed render-pt2)
-                     (apply concat)
-                     (filter some?)
-                     (pmap :result))]
-    (when (not (empty? spixels))
-      (svg-clj.tools/cider-show spixels))))
-
-(defn cider-show4
-  [frep]
-  (let [frep (translate frep [-200 -200])
-        pixels (m/new-array :ndarray [400 400])]
-    (do (m/emap-indexed! (partial render-pt3 frep) pixels)
-        (let [spixels (pmap :result (filter some? (apply concat pixels)))]
-          (when (not (empty? spixels))
-            (svg-clj.tools/cider-show spixels))))))
-
-(defn render-pt5
-  [f pt]
-  (let [dist (utils/round (f pt) 4)
-        r 10
-        a (utils/round 
-           (- 1 (Math/abs ^double (/ (utils/clamp dist (- r) r) r))) 3)]
-    (when (< -1000000 dist r)
-      (svg/g 
-       (-> (svg/rect 1 1)
-           (tf/translate [0.5 0.5])
-           (tf/translate pt)
-           (tf/style {:fill (if (< dist 0)
-                              "slategray"
-                              "none")
-                      :opacity 1 #_(if (< dist (- r)) 1 a)}))
-       (-> (svg/rect 1 1)
-           (tf/translate [0.5 0.5])
-           (tf/translate pt)
-           (tf/style {:fill (if (> dist (- r))
-                              "#ffeeff"
-                              "none")
-                      :opacity a}))))))
-
-(defn render5
-  [w h frep render-fn]
-  (let [xf (partial render-fn (translate frep [(/ w -2.0) (/ h -2.0)]))
-        pts (for [x (range w)
-                  y (range h)] [x y])]
-    (doall (pmap xf pts))))
-
-(defn cider-show5
-  [frep]
-  (let [render (filter some? (render5 400 400 frep render-pt5))]
-    (when (not (empty? render))
-      (svg-clj.tools/cider-show render))))
-
-#+end_src
-
-
-#+begin_src clojure :tangle ./src/forge/frep.cljc
-(def iso-euler-angles [35.264 45 0])
-(def origin-angle-adjust-a [90 0 0])
-(def origin-angle-adjust-b [0 -90 0])
-
-(defn isometric-xf
-  [frep]
-  (-> frep
-      #_(rotate origin-angle-adjust-b)
-      #_(rotate origin-angle-adjust-a)
-      (rotate iso-euler-angles)
-      (rotate [0 0 45])))
-
-(defn cider-show-3d
-  [frep]
-  (let [frep (isometric-xf frep)
-        render
-        (filter 
-         some?
-         (for [x (range -200 201 1)
-               y (range -200 201 1)
-               z (range -200 201 1)]
-           (let [r 0.5
-                 pt [x y z]
-                 dist (frep pt)
-                 a (utils/round 
-                    (- 1 (/ (utils/clamp dist 0 r) r)) 3)]
-             (when (< (- r) dist r)
-               (-> (svg/rect 1 1)
-                   (tf/translate [0.5 0.5])
-                   (tf/translate (drop-last pt))
-                   (tf/style {:fill (if (> dist 0)
-                                      "hotpink"
-                                      "skyblue")
-                              :opacity (if (< dist 0) 1 a)}))))))]
-    (when (not (empty? render))
-      (svg-clj.tools/cider-show render))))
-
-(defn slice
-  [frep z]
-  (fn [pt]
-    (frep (conj pt z))))
-
-(def a (-> (utils/regular-polygon-pts 80 8)
-           (polygon)))
-
-(def b (-> a
-           (extrude 100)))
-#+end_src
-
-
-#+begin_src clojure :tangle ./src/forge/frep.cljc
-(defn march
-  [f [x y]]
-  (let [frep (isometric-xf f)
-        from (conj [x y] -200)
-        dir [0 0 1]
-        max-steps 50
-        min-dist 0.0001]
-    (loop [n-steps 0
-           total-dist 0]
-      (let [pt (utils/v+ from [0 0 total-dist])
-            d (utils/round (frep pt) 4)]
-        (if (or (> n-steps max-steps)
-                (< d min-dist))
-          (- 1.0 (/ n-steps max-steps))
-          (recur (inc n-steps) (+ total-dist d)))))))
-
-(defn render-pixel
-  [[pt a]]
-  (when (> a 0.0001)
-    (-> (svg/rect 1 1)
-        (tf/translate [0.5 0.5])
-        (tf/translate pt)
-        (tf/style {:fill "slategray"
-                   :opacity a}))))
-
-(defn render-frep
-  [x1 y1 x2 y2 f]
-  (cp/pfor 10 [x (range x1 (inc x2))
-               y (range y1 (inc y2))]
-           (render-pixel [[x y] (f [x y])])))
-
-(defn cider-show-3d
-  [frep]
-  (let [f (partial march frep)
-        render (remove nil? (render-frep -200 -200 200 200 f))]
-    (when (not (empty? render))
-      (svg-clj.tools/cider-show render))))
-
-(def asdf
-  (let [base (box 200 200 200)]
-    (-> (difference
-         (box 80 80 80)
-         (sphere 50))
-        (rotate [0 0 85]))))
-
-#+end_src
 
 * brep
 ** ns
@@ -2445,6 +2155,7 @@ Then, any number of file inputs can be used in the definition of an object.
 For example, 2D drawings can be produced as SVG and read into forge and manipulated using Forge geom tools. Then, you can directly reference them in model creation and output a model to whatever compiler target you wish.
 
 Likewise, you can also use native lang. files as modules in a design. So, if you have a multi file scad design, you can read each scad file in and trust that it is accurately represented with forge-model data and proceed as if it were built directly with forge.
+
 ** image
 This is just copy pasted from scad-drawing project. The intent here is to have a tool that takes a png filename and gives a set of points/paths which can be used as the basis for sketch elements, and used in Forge models as if native fns had created the points/paths.
 
@@ -2610,13 +2321,15 @@ Elements being converted:
 
 (defn path->pts
   [path-elem]
-  (let [cmds (path/path-string->commands (get-in path-elem [1 :d]))]
+  (let [cmds (-> path-elem
+                 (get-in [1 :d])
+                 path/path-str->cmds)]
     (into [] (filter some? (map :input cmds)))))
 
 (defn- svg-path-elem->polygon
   [path-elem]
   (let [pgs (->> path-elem
-                 tf/split-path 
+                 path/split-path
                  (sort-by bb-area)
                  (map path->pts)
                  (map mdl/polygon)
@@ -2625,19 +2338,10 @@ Elements being converted:
       (apply mdl/difference pgs)
       (first pgs))))
 
-(defn- svg-path-elem->polyline2
-  [path-elem]
-  (let [pgs (->> path-elem
-                 #_tf/split-path 
-                 #_(sort-by bb-area)
-                 path->pts
-                 mdl/polyline)]
-    pgs))
-
 (defn- svg-path-elem->polyline
   [path-elem]
   (let [pgs (->> path-elem
-                 tf/split-path 
+                 path/split-path 
                  (sort-by bb-area)
                  (map path->pts)
                  (map mdl/polyline)
@@ -2649,7 +2353,7 @@ Elements being converted:
 (defmethod svg->mdl :path
   [[_ props :as elem]]
   (let [xf-props (clean-props props)
-        xf-elem elem (tf/decurve elem)]
+        xf-elem (path/decurve elem)]
     (-> (if (closed? elem)
           (svg-path-elem->polygon xf-elem)
           (svg-path-elem->polyline xf-elem))
@@ -2666,7 +2370,7 @@ Elements being converted:
       svg-str->elements
       (->> (drop 2))
       re-center
-      (->> (mapcat tf/split-path))
+      (->> (mapcat path/split-path))
       (->> (map path->pts))
       (->> (map #(mdl/polyline %)))
       mdl/union))
@@ -2698,9 +2402,7 @@ Elements being converted:
 
 #+end_src
 
-[[./_tmp.svg]]
-
-* compiler
+* compilers
 A collection of methods for exporting models.
 
 ** scad
@@ -2777,6 +2479,11 @@ This is based off of Matthew Farrell's work on scad-clj. The code is modified in
   [depth [_ {:keys [r center]}]] 
   (list (indent depth) 
         "circle (r=" r ");\n"))
+
+(defmethod write-expr :ellipse
+  [depth [_ {:keys [rx ry center]}]] 
+  (list (indent depth) 
+        "scale([1, " (/ ry rx) ", 1])circle (r=" rx ");\n"))
 
 (defmethod write-expr :rect
   [depth [_ {:keys [w h center]}]]
@@ -3693,9 +3400,28 @@ A namespace for playing around with fns
              ((brep/bezier [[0 0 0] [400 400 400] [700 50 200] [300 -200 100] [30 -500 -100]]) t))
            (mdl/polyline)))
 
-(scad/cider-show b)
-#_(scad/cider-show d)
+(def aa
+  (->> (slurp "sk.svg")
+       svg-clj.utils/svg-str->elements
+       (drop 2)
+       last
+       (drop 2)
+       last
+       svg-clj.transforms/path->elements))
+
+(svg-clj.tools/cider-show aa)
 (scad/cider-show d)
-(spit "forge.scad" (scad/write c))
+
+(defn line-drawing
+  [fname & {:keys [r]}]
+  (-> fname
+      img->str
+      svg-str->elements
+      (->> (drop 2))
+      re-center
+      (->> (mapcat path/split-path))
+      (->> (map path->pts))
+      (->> (map #(mdl/polyline %)))
+      mdl/union))
 
 #+end_src

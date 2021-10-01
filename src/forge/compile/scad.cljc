@@ -46,6 +46,11 @@
   (list (indent depth) 
         "circle (r=" r ");\n"))
 
+(defmethod write-expr :ellipse
+  [depth [_ {:keys [rx ry center]}]] 
+  (list (indent depth) 
+        "scale([1, " (/ ry rx) ", 1])circle (r=" rx ");\n"))
+
 (defmethod write-expr :rect
   [depth [_ {:keys [w h center]}]]
   (list (indent depth)

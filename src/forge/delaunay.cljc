@@ -6,8 +6,7 @@
             :cljs #(js/Math.abs %)))
 
 (def pow #?(:clj #(Math/pow %1 %2)
-            :cljs #(Math/pow %1 %2)))
-
+            :cljs #(js/Math/pow %1 %2)))
 
 (defn rand-int-pt
   ([n]
