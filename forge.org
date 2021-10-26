@@ -42,7 +42,7 @@ Alpha. Changes are very likely to occur as I continue to build and discover the 
 Use the git deps dependency:
 
 ```clojure
-io.github.adam-james-v/forge {:git/tag "v0.0.1"}
+io.github.adam-james-v/forge {:git/sha "b48fc23674862090d8645fc605afbf3dd01ef05e"}
 ```
 
 
