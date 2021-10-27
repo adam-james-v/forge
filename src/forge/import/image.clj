@@ -7,7 +7,7 @@
             [svg-clj.path :as path]
             [svg-clj.transforms :as tf]
             [svg-clj.utils :refer [s->v
-                                   svg-str->elements]]
+                                   svg-str->hiccup]]
             [forge.model :as mdl]
             [forge.utils :as utils]))
 
@@ -176,7 +176,7 @@
   [fname & {:keys [r]}]
   (-> fname
       img->str
-      svg-str->elements
+      svg-str->hiccup
       (->> (drop 2))
       re-center
       (->> (mapcat path/split-path))
@@ -188,7 +188,7 @@
   [fname]
   (-> fname
       img->str
-      svg-str->elements
+      svg-str->hiccup
       (->> (drop 2))
       re-center
       (->> (map svg-path-elem->polygon))
@@ -196,7 +196,7 @@
 
 (defn import-svg
   [fname]
-  (let [data (-> (slurp fname) svg-str->elements)
+  (let [data (-> (slurp fname) svg-str->hiccup)
         elems (if (= :svg (first data)) (drop 2 data) data)]
     (->> elems
          (map svg->mdl)

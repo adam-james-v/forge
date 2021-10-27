@@ -2187,7 +2187,7 @@ This is just copy pasted from scad-drawing project. The intent here is to have a
             [svg-clj.path :as path]
             [svg-clj.transforms :as tf]
             [svg-clj.utils :refer [s->v
-                                   svg-str->elements]]
+                                   svg-str->hiccup]]
             [forge.model :as mdl]
             [forge.utils :as utils]))
 
@@ -2384,7 +2384,7 @@ Elements being converted:
   [fname & {:keys [r]}]
   (-> fname
       img->str
-      svg-str->elements
+      svg-str->hiccup
       (->> (drop 2))
       re-center
       (->> (mapcat path/split-path))
@@ -2396,7 +2396,7 @@ Elements being converted:
   [fname]
   (-> fname
       img->str
-      svg-str->elements
+      svg-str->hiccup
       (->> (drop 2))
       re-center
       (->> (map svg-path-elem->polygon))
@@ -2404,7 +2404,7 @@ Elements being converted:
 
 (defn import-svg
   [fname]
-  (let [data (-> (slurp fname) svg-str->elements)
+  (let [data (-> (slurp fname) svg-str->hiccup)
         elems (if (= :svg (first data)) (drop 2 data) data)]
     (->> elems
          (map svg->mdl)
@@ -2441,7 +2441,7 @@ This is based off of Matthew Farrell's work on scad-clj. The code is modified in
   (:require [clojure.java.shell :refer [sh]]
             [clojure.string :as str]
             [forge.utils :as utils]
-            [svg-clj.utils :refer [svg-str->elements]]
+            [svg-clj.utils :refer [svg-str->hiccup]]
             [forge.model :as mdl]))
 
 #+end_src
@@ -2795,7 +2795,7 @@ Which you can toggle with:
         (let [svg-str (slurp fname)]
           (do (sh "rm" fname)
               (rest 
-               (svg-str->elements svg-str)))))))
+               (svg-str->hiccup svg-str)))))))
 #+end_src
 
 ** freecad-script
@@ -3419,7 +3419,7 @@ A namespace for playing around with fns
 
 (def aa
   (->> (slurp "sk.svg")
-       svg-clj.utils/svg-str->elements
+       svg-clj.utils/svg-str->hiccup
        (drop 2)
        last
        (drop 2)
@@ -3433,7 +3433,7 @@ A namespace for playing around with fns
   [fname & {:keys [r]}]
   (-> fname
       img->str
-      svg-str->elements
+      svg-str->hiccup
       (->> (drop 2))
       re-center
       (->> (mapcat path/split-path))

@@ -2,7 +2,7 @@
   (:require [clojure.java.shell :refer [sh]]
             [clojure.string :as str]
             [forge.utils :as utils]
-            [svg-clj.utils :refer [svg-str->elements]]
+            [svg-clj.utils :refer [svg-str->hiccup]]
             [forge.model :as mdl]))
 
 ;; multimethod
@@ -306,4 +306,4 @@
         (let [svg-str (slurp fname)]
           (do (sh "rm" fname)
               (rest 
-               (svg-str->elements svg-str)))))))
+               (svg-str->hiccup svg-str)))))))
