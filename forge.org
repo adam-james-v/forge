@@ -325,10 +325,10 @@ It is sufficient for Forge for the following reasons:
   "compare two float values for approximate equality.
    
    Default epsilon = 0.00001"
-  ([^long a ^long b]
+  ([^double a ^double b]
    (nearly? a b 0.00001))
 
-  ([^long a ^long b ^long epsilon]
+  ([^double a ^double b ^double epsilon]
    (let [a (float a)
          b (float b)]
      (if (= a b)
@@ -350,7 +350,7 @@ It is sufficient for Forge for the following reasons:
   (if (not (= (count coll-a) (count coll-b)))
     #?(:clj  (throw (Exception. "collections must be same size."))
        :cljs (throw (js/Error. "collections must be same size.")))
-    (let [diffs (mapv #(float (Math/abs ^long (- %1 %2))) coll-a coll-b)]
+    (let [diffs (mapv #(float (Math/abs ^double (- %1 %2))) coll-a coll-b)]
       (empty? 
        (filter 
         false? 
@@ -430,6 +430,9 @@ and re-implemented with clojure.test library.
 
 ** math-utils
 #+begin_src clojure :tangle ./src/forge/utils.cljc
+(def abs #?(:clj #(Math/abs %)  :cljs js/Math.abs))
+(def pow #?(:clj #(Math/pow %1 %2) :cljs js/Math.pow))
+
 (defn to-deg
   [rad]
   (* rad (/ 180 Math/PI)))
@@ -438,10 +441,17 @@ and re-implemented with clojure.test library.
   [deg]
   (* deg (/ Math/PI 180)))
 
+(def ^:dynamic *rounding* nil)
 (defn round
-  [num places]
-  (let [d (Math/pow 10 places)]
-    (/ (Math/round (* num d)) d)))
+  "Rounds a non-integer number `num` to `places` decimal places."
+  ([num]
+   (round num *rounding*))
+  ([num places]
+   (if places
+     (let [d #?(:clj (bigdec (Math/pow 10 places))
+                :cljs (Math/pow 10 places))]
+       (double (/ (Math/round (* num d)) d)))
+     num)))
 
 (defn sign
   "returns -1 if x is less than 0, 0 if x is 0 and 1 if x is greater"
@@ -470,7 +480,10 @@ and re-implemented with clojure.test library.
 
 (defn add-z
   [pt]
-  (conj (vec pt) 0))
+  (let [dim (count pt)]
+    (if (< dim 3)
+      (conj (vec pt) 0)
+      pt)))
 
 (defn flip-y
   [pts]
@@ -527,20 +540,30 @@ and re-implemented with clojure.test library.
 
 ** geometry-calculations
 #+begin_src clojure :tangle ./src/forge/utils.cljc
-(defn slope-2d
+(defn distance
+  "compute distance between two points"
   [a b]
-  (let [[x1 y1] a
-        [x2 y2] b]
-    (/ (- y2 y1) (- x2 x1))))
+  (let [v (v- b a)
+        v2 (reduce + (v* v v))]
+    (Math/sqrt ^double v2)))
+
+(defn distance-squared
+  [a b]
+  (let [v (v- b a)]
+    (reduce + (v* v v))))
+
+(defn slope
+  [[ax ay] [bx by]]
+  (/ (- by ay) (- bx ax)))
 
 (defn perpendicular-2d
   [[x y]]
   [(- y) x])
 
-(defn determinant-2d
-  [a b]
-  (- (* (first a) (second b))
-     (* (second a) (first b))))
+(defn determinant
+  [[ax ay] [bx by]]
+  (- (* ax by)
+     (* ay bx)))
 
 (defn dot*
   "calculates the dot product of two vectors"
@@ -557,12 +580,23 @@ and re-implemented with clojure.test library.
         k (- (* a1 b2) (* a2 b1))]
     [i j k]))
 
-(defn distance
-  "compute distance between two points"
-  [a b]
-  (let [v (v- b a)
-        v2 (reduce + (v* v v))]
-    (Math/sqrt ^double v2)))
+(defn cross*-k
+  "Calculates the k component of the cross product of two 2D vectors, assuming Z=0 as the 3rd component."
+  [[ax ay] [bx by]]
+  (- (* ax by) (* ay bx)))
+
+(defn normal
+  "Calculates the normal vector of plane given 3 points or calculates the normal vector of a line given two (2D) points."
+  ([a b]
+   (let [[x1 y1] a
+         [x2 y2] b
+         dx (- x2 x1)
+         dy (- y2 y1)]
+     [(- dy) dx]))
+  ([a b c]
+   (let [ab (v- a b)
+         ac (v- a c)]
+     (cross* ab ac))))
 
 (defn normalize
   "find the unit vector of a given vector"
@@ -570,29 +604,10 @@ and re-implemented with clojure.test library.
   (let [m (Math/sqrt ^double (reduce + (v* v v)))]
     (mapv / v (repeat m))))
 
-(defn on-line?
-  "determine if a point is on a capped line"
-  [pt line]
-  (let [[a b] line
-        ap (v- a pt)
-        bp (v- b pt)]
-    (if (or (all-nearly? pt a) 
-            (all-nearly? pt b))
-      true
-      (let [na (normalize ap)
-            nb (normalize bp)]
-        (and 
-         (all-nearly? (cross* ap bp) [0 0 0]) 
-         (not (all-nearly? na nb)))))))
+#+end_src
 
-(defn on-line-inf?
-  "determine if a point is on an infinitely extending line"
-  [pt line]
-  (let [[a b] line
-        ap (mapv - a pt)
-        bp (mapv - b pt)]
-    (all-nearly? (cross* ap bp) [0 0 0])))
-
+** rotate-pt
+#+begin_src clojure :tangle ./src/forge/utils.cljc
 (defn sin-cos-pair [theta]
   [(Math/sin ^long (to-rad theta))
    (Math/cos ^long (to-rad theta))])
@@ -611,7 +626,7 @@ and re-implemented with clojure.test library.
     (= axis :y) (apply #(into [] [%2 y %1]) (rot-pt-2d [z x] theta))
     (= axis :z) (into (rot-pt-2d [x y] theta) [z])))
 
-(defn rotate-point
+(defn rotate-pt
   [pt [ax ay az]]
   (let [pt (if (< (count pt) 3)
              (conj pt 0)
@@ -620,14 +635,245 @@ and re-implemented with clojure.test library.
         (rot-pt :z az)
         (rot-pt :y ay)
         (rot-pt :x ax))))
+#+end_src
 
-(defn normal
-  "find normal vector of plane given 3 points"
+** scale-pt
+#+begin_src clojure :tangle ./src/forge/utils.cljc
+(defn scale-pt
+  [pt [sx sy sz]]
+  (v* pt [sx sy sz]))
+
+(defn scale-pt-from-center
+  [[x y z] [sx sy sz] [cx cy cz]]
+  [(+ (* (- x cx) sx) cx)
+   (+ (* (- y cy) sy) cy)
+   (+ (* (- z cz) sz) cz)])
+
+#+end_src
+
+** regular-polygon-pts
+#+BEGIN_SRC clojure :tangle ./src/forge/utils.cljc
+(defn regular-polygon-pts
+  [r n]
+  (let [angle (* 2 Math/PI (/ 1 n))]
+    (for [step (range n)]
+      [(* r (Math/cos (* step angle)))
+       (* r (Math/sin (* step angle)))])))
+#+END_SRC
+
+** random-pts
+#+BEGIN_SRC clojure :tangle ./src/forge/utils.cljc
+(defn random-pts
+  [w h n]
+  (let [[wh hh] (map #(/ % 2) [w h])
+        f #(vector (rand-int w) (rand-int h))]
+    (->> (repeatedly n f)
+         (map #(v- % [wh hh])))))
+
+#+END_SRC
+
+** on-line?
+#+begin_src clojure :tangle ./src/forge/utils.cljc
+(defn on-line?
+  "determine if a point is on a capped line"
+  [pt line]
+  (let [[a b] line
+        ap (add-z (v- a pt))
+        bp (add-z (v- b pt))]
+    (if (or (all-nearly? pt a) 
+            (all-nearly? pt b))
+      true
+      (let [na (normalize ap)
+            nb (normalize bp)]
+        (and 
+         (all-nearly? (cross* ap bp) [0 0 0]) 
+         (not (all-nearly? na nb)))))))
+
+(defn on-line-inf?
+  "determine if a point is on an infinitely extending line"
+  [pt line]
+  (let [[a b] line
+        ap (add-z (v- a pt))
+        bp (add-z (v- b pt))]
+    (all-nearly? (cross* ap bp) [0 0 0])))
+
+#+end_src
+
+** edges-from-pts
+#+begin_src clojure :tangle ./src/forge/utils.cljc
+(defn edges
+  [pts]
+  (vec (partition 2 1 (concat pts [(first pts)]))))
+
+#+end_src
+
+** centroid-of-pts
+#+begin_src clojure :tangle ./src/forge/utils.cljc
+(defn centroid-of-pts
+  "Calculates the arithmetic mean position of the given `pts`."
+  [pts]
+  (let [ndim (count (first (sort-by count pts)))
+        splits (for [axis (range 0 ndim)]
+                 (map #(nth % axis) pts))]
+    (mapv #(apply average %) splits)))
+
+#+end_src
+
+** bounds-of-pts
+#+begin_src clojure :tangle ./src/forge/utils.cljc
+(defn bounds-of-pts
+  "Calculates the axis-aligned-bounding-box of 2D points, `pts`."
+  [pts]
+  (let [xmax (apply max (map first pts))
+        ymax (apply max (map second pts))
+        xmin (apply min (map first pts))
+        ymin (apply min (map second pts))]
+    (vector [xmin ymin]
+            [xmax ymin]
+            [xmax ymax]
+            [xmin ymax])))
+
+(defn bb-dims
+  [pts]
+  (let [[[xmin ymin] _ [xmax ymax] _] (bounds-of-pts pts)]
+    [(- xmax xmin) (- ymax ymin)]))
+
+#+end_src
+
+** radius-from-pts
+#+begin_src clojure :tangle ./src/forge/utils.cljc
+(defn radius-from-pts
+  "compute the radius of an arc defined by 3 points"
+  [p1 p2 p3]
+  (when-not (on-line? p1 [p2 p3])
+    (let [a (distance p3 p2)
+          b (distance p3 p1)
+          c (distance p2 p1)
+          s (/ (+ a b c) 2)
+          sa ( - s a)
+          sb ( - s b)
+          sc ( - s c)
+          rt (Math/sqrt ^double (* s sa sb sc))
+          radius (/ (/ (* a b c) 4) rt)]
+      radius)))
+
+#+end_src
+
+** angle-from-pts
+#+begin_src clojure :tangle ./src/forge/utils.cljc
+;; https://math.stackexchange.com/questions/361412/finding-the-angle-between-three-points
+(defn angle-from-pts-old
+  [p1 p2 p3]
+  (let [eps 0.00001
+        v1 (v- p2 p1)
+        v2 (v- p2 p3)
+        l1 (distance p1 p2)
+        l2 (distance p3 p2)
+        n (dot* v1 v2)
+        d (Math/abs ^double (* l1 l2))]
+    (when (> d eps)
+      (to-deg (Math/acos ^double (/ n d))))))
+
+;; https://math.stackexchange.com/questions/361412/finding-the-angle-between-three-points
+(defn- check-quadrants
+  "Using `p2` as the 'origin', return a string indicating positive, negative, or axis-aligned for p1 p2."
+  [p1 p2 p3]
+  (let [v1 (v- p1 p2)
+        v2 (v- p3 p2)
+        qf (fn [[x y]]
+             (cond (and (pos? x) (pos? y)) "pp"
+                   (and (pos? x) (neg? y)) "pn"
+                   (and (neg? x) (neg? y)) "nn"
+                   (and (neg? x) (pos? y)) "np"
+                   (pos? x) "p_"
+                   (neg? x) "n_"
+                   (pos? y) "_p"
+                   (neg? y) "_n"))]
+    (apply str (map qf [v1 v2]))))
+
+(defn angle-from-pts
+  "Calculates the angle starting at line p3p2 going to line p1p2.
+Put another way, the angle is measured following the 'right hand rule' around p2."
+  [p1 p2 p3]
+  (let [v1 (v- p1 p2)
+        v2 (v- p3 p2)
+        [v1nx v1ny] (normalize v1)
+        [v2nx v2ny] (normalize v2)
+        l1 (distance p1 p2)
+        l2 (distance p3 p2)
+        n (dot* v1 v2)
+        d (* l1 l2)]
+    (when-not (zeroish? (float d))
+      (let [a (to-deg (Math/acos (/ n d)))
+            quadrants (check-quadrants p1 p2 p3)]
+        (cond
+          ;; same quadrant, checking if V2 is before or after V1
+          (and (= "pppp" quadrants) (> v2nx v1nx)) a
+          (and (= "npnp" quadrants) (> v2nx v1nx)) a
+          (and (= "nnnn" quadrants) (< v2nx v1nx)) a
+          (and (= "pnpn" quadrants) (< v2nx v1nx)) a
+          ;; within same quadrant
+          (#{"p_p_" "ppp_" "_ppp" "p_pn"} quadrants) a 
+          (#{"_p_p" "np_p" "n_np"} quadrants) a
+          (#{"n_n_" "nnn_" "_nnn"} quadrants) a
+          (#{"_n_n" "pn_n" "pnp_"} quadrants) a
+          ;; one quadrant away
+          (#{"npp_" "nn_p" "pnn_" "pp_n"} quadrants) a
+          (#{"n_pp" "_nnp" "p_nn" "_ppn"} quadrants) a
+          (#{"nppp" "nnnp" "pnnn" "pppn"} quadrants) a
+          ;; 90 degrees away on axes
+          (#{"_pp_" "n__p" "_nn_" "p__n"} quadrants) a
+          ;; two quadrants away
+          (and (= "ppnn" quadrants) (> (Math/abs v1nx) (Math/abs v2nx))) a
+          (and (= "nnpp" quadrants) (> (Math/abs v1nx) (Math/abs v2nx))) a
+          (and (= "pnnp" quadrants) (< (Math/abs v1nx) (Math/abs v2nx))) a
+          (and (= "nppn" quadrants) (< (Math/abs v1nx) (Math/abs v2nx))) a
+          ;; 180 degrees away on axes
+          (#{"p_n_" "_p_n" "n_p_" "_n_p"} quadrants) a
+          :else (- 360 a))))))
+
+#+end_src
+
+** arc-center-from-pts
+#+begin_src clojure :tangle ./src/forge/utils.cljc
+;; https://math.stackexchange.com/a/1743505
+(defn arc-center-from-pts
+  "compute the center point of an arc through 3 points"
+  [p1 p2 p3]
+  (when-not (on-line? p1 [p2 p3])
+    (let [u1 (mapv - p2 p1)
+          u2 (mapv - p3 p1)
+          w1 (cross* (mapv - p3 p1) u1)
+          u (normalize u1)
+          w (normalize w1)
+          v (cross* w u)
+          [bx by] [(dot* u1 u) 0]
+          [cx cy] [(dot* u2 u) (dot* u2 v)]
+          h (/ (+ (sq (- cx (/ bx 2))) (sq cy) (- 0 (sq (/ bx 2)))) 
+               (* 2 cy))]
+      (v+ p1 
+          (v* (repeat (/ bx 2)) u) 
+          (v* (repeat h) v)))))
+
+#+end_src
+
+** corner-condition
+#+begin_src clojure :tangle ./src/forge/utils.cljc
+(defn corner-condition
   [a b c]
-  (let [ab (mapv - a b)
-        ac (mapv - a c)]
-    (if (on-line? c [a b]) nil (cross* ab ac))))
+  (let [ba (v- a b)
+        bc (v- c b)
+        eps 0.000001
+        k (cross*-k ba bc)]
+    (cond
+      (> eps (abs k)) :colinear
+      (< eps k) :reflex
+      (> (- eps) k) :convex)))
 
+#+end_src
+
+** planar?
+#+begin_src clojure :tangle ./src/forge/utils.cljc
 (defn on-plane?
   "determine if a point is on a plane"
   [pt plane]
@@ -656,67 +902,39 @@ and re-implemented with clojure.test library.
     :else (let [plane (plane-triple pts)
                 chk-pts (vec-diff plane pts)]
             (every? #(= % true) (mapv #(on-plane? % plane) chk-pts)))))
+#+end_src
 
-(defn radius-from-pts
-  "compute the radius of an arc defined by 3 points"
-  [p1 p2 p3]
-  (when-not (on-line? p1 [p2 p3])
-    (let [a (distance p3 p2)
-          b (distance p3 p1)
-          c (distance p2 p1)
-          s (/ (+ a b c) 2)
-          sa ( - s a)
-          sb ( - s b)
-          sc ( - s c)
-          rt (Math/sqrt (* s sa sb sc))
-          R (/ (/ (* a b c) 4) rt)]
-      R)))
-
-;; https://math.stackexchange.com/questions/361412/finding-the-angle-between-three-points
-(defn angle-from-pts
-  [p1 p2 p3]
-  (let [v1 (v- p2 p1)
-        v2 (v- p2 p3)
-        l1 (distance p1 p2)
-        l2 (distance p3 p2)
-        n (dot* v1 v2)
-        d (Math/abs ^long (* l1 l2))]
-    (when (not (= 0.0 (float d)))
-      (to-deg (Math/acos ^long (/ n d))))))
-
-;; https://math.stackexchange.com/a/1743505
-(defn center-from-pts
-  "compute the center point of an arc through 3 points"
-  [p1 p2 p3]
-  (when-not (on-line? p1 [p2 p3])
-    (let [u1 (mapv - p2 p1)
-          u2 (mapv - p3 p1)
-          w1 (cross* (mapv - p3 p1) u1)
-          u (normalize u1)
-          w (normalize w1)
-          v (cross* w u)
-          [bx by] [(dot* u1 u) 0]
-          [cx cy] [(dot* u2 u) (dot* u2 v)]
-          h (/ (+ (sq (- cx (/ bx 2))) (sq cy) (- 0 (sq (/ bx 2)))) 
-               (* 2 cy))]
-      (v+ p1 
-          (v* (repeat (/ bx 2)) u) 
-          (v* (repeat h) v)))))
+** colinear? 
+#+begin_src clojure :tangle ./src/forge/utils.cljc
+(defn colinear?
+  [a b c]
+  (let [ba (v- a b)
+        bc (v- c b)
+        eps 0.000001]
+    (> eps (abs (cross*-k ba bc)))))
 
 #+end_src
 
-** generators
-These are things like point list generators.
+** pt-inside?
+#+begin_src clojure :tangle ./src/forge/utils.cljc
+;; https://youtu.be/hTJFcHutls8?t=1473
+;; use k component from cross product to quickly check if vector
+;; is on right or left of another vector
+;; check each triangle edge vector against corner to pt vectors
+(defn pt-inside?
+  [[a b c] pt]
+  (let [ab (v- b a)
+        bc (v- c b)
+        ca (v- a c)
+        apt (v- pt a)
+        bpt (v- pt b)
+        cpt (v- pt c)]
+    (not
+     (or (<= (cross*-k ab apt) 0)
+         (<= (cross*-k bc bpt) 0)
+         (<= (cross*-k ca cpt) 0)))))
 
-#+BEGIN_SRC clojure :tangle ./src/forge/utils.cljc
-(defn regular-polygon-pts
-  [r n]
-  (let [angle (* 2 Math/PI (/ 1 n))]
-    (for [step (range n)]
-      [(* r (Math/cos (* step angle)))
-       (* r (Math/sin (* step angle)))])))
-
-#+END_SRC
+#+end_src
 
 ** misc
 #+BEGIN_SRC clojure :tangle ./src/forge/utils.cljc
@@ -726,12 +944,12 @@ These are things like point list generators.
 
 #+END_SRC
 
-* geom-computations
+* geom
 ** ns
 #+begin_src clojure :tangle ./src/forge/geom.cljc
 (ns forge.geom
   (:require [forge.utils :as utils]
-            [forge.delaunay :as delaunay]
+            [forge.clip-ears :as clip-ears]
             [clojure.string :as str]
             [same :refer [ish? zeroish?]]))
 
@@ -739,118 +957,28 @@ These are things like point list generators.
 
 ** area
 #+begin_src clojure :tangle ./src/forge/geom.cljc
-(defn triangle-area
+(defn- triangle-area
   "compute the area of a triangle defined by three points"
-  [a b c]
+  [[a b c]]
   ;; use Heron's formula
   (let [la (utils/distance b c)
         lb (utils/distance a c)
         lc (utils/distance a b)
         s (/ (+ la lb lc) 2)]
-    (Math/sqrt (* s (- s la) (- s lb) (- s lc)))))
+    (Math/sqrt ^double (* s (- s la) (- s lb) (- s lc)))))
 
-(defn polygon-area
+(defn area
   [pts]
-  (let [tris (:triangles (delaunay/triangulate pts))]
+  (let [tris (:triangles (clip-ears/triangulate pts))]
     (->> pts
-         (delaunay/triangulate)
-         (:triangles)
-         (map #(apply triangle-area %))
+         clip-ears/triangulate
+         :tris
+         (map triangle-area)
          (reduce +))))
 
 #+end_src
 
-** bounds
-#+begin_src clojure :tangle ./src/forge/geom.cljc
-(defn bb-corners-2d
-  [pts]
-  (let [xs (map first pts)
-        ys (map last pts)
-        xmax (apply max xs)
-        ymax (apply max ys)
-        xmin (apply min xs)
-        ymin (apply min ys)]
-    [[xmin ymin]
-     [xmax ymax]]))
-
-(defn bb-center-2d
-  [pts]
-  (let [xs (map first pts)
-        ys (map last pts)
-        xmax (apply max xs)
-        ymax (apply max ys)
-        xmin (apply min xs)
-        ymin (apply min ys)]
-    [(+ (/ (- xmax xmin) 2.0) xmin)
-     (+ (/ (- ymax ymin) 2.0) ymin)]))
-
-(defn midpoint
-  [pts]
-  (let [axes (count (first pts))
-        splits (for [axis (range 0 axes)]
-                 (map #(nth % axis) pts))]
-    (mapv #(apply utils/average %) splits)))
-
-(defn bounding-box-corners
-  [shape]
-  (let [xs (map #(nth % 0)
-                (sort-by #(nth % 0) (:vertices shape)))
-        ys (map #(nth % 1)
-                (sort-by #(nth % 1) (:vertices shape)))
-        zs (map #(nth % 2)
-                (sort-by #(nth % 2) (:vertices shape)))]
-    [[(first xs) (first ys) (first zs)]
-     [(last xs) (last ys) (last zs)]]))
-
-(declare polygon)
-(declare extrude)
-(defn bounding-volume-proto
-  [shape]
-  (let [[a z] (bounding-box-corners shape)
-        b [(first z) (second a) (last a)]
-        c [(first z) (second z) (last a)]
-        d [(first a) (second z) (last a)]
-        s1 (polygon [a b c d])
-        h (Math/abs (- (last z) (last a)))]
-    (extrude s1 h)))
-
-#+end_src
-
-** estimators
-Some properties are needed during calculations. The simplest way to ge them is with estimators. These should improve over time, but for now can 'brute force' things a bit.
-
-#+begin_src clojure :tangle ./src/forge/geom.cljc
-(defn estimate-path-length
-  [path [t1 t2] step]
-  (let [samples (range t1 (+ t2 step) step)
-        pts (partition 2 1 (map path samples))]
-    (reduce + (map (partial apply utils/distance) pts))))
-
-;; this breaks somewhat often. Consider a case where the match is
-;; a very tiny difference in parameter space. It's easy to pass over it
-;; there's surely a more refined approach, perhaps a combination of several algorithms?
-(defn close?
-  [p1 p2]
-  (let [[x1 y1 z1] p1
-        [x2 y2 z2] p2]
-    (and (utils/nearly? (+ 1 (Math/abs (- x1 x2))) 1.0)
-         (utils/nearly? (+ 1 (Math/abs (- y1 y2))) 1.0)
-         (utils/nearly? (+ 1 (Math/abs (- z1 z2))) 1.0))))
-
-(defn estimate-parameter
-  [f pt step]
-  (let [[x y z] pt
-        samples (into [] (range 0 (+ 1 step) step))
-        pts (mapv f samples)
-        close? (partial close? pt)]
-    (get samples
-         (count (take-while #(not (= (first (filter close? pts)) %)) pts)))))
-
-#+end_src
-
-** polygon-intersection
-HUGE NOTE: The nearly function needs serious checking. It will be necessary to work very well because I need 'close enough' predicates often when working with geometry checks.
-
+** line-intersection
 #+begin_src clojure :tangle ./src/forge/geom.cljc
 (defn line-intersection
   [[a b] [c d]]
@@ -860,200 +988,69 @@ HUGE NOTE: The nearly function needs serious checking. It will be necessary to w
         [dx dy] d
         xdiff [(- ax bx) (- cx dx)]
         ydiff [(- ay by) (- cy dy)]
-        div (utils/determinant-2d xdiff ydiff)]
-    (when (not (zeroish? (Math/abs div))) 
-      (let [d [(utils/determinant-2d a b) (utils/determinant-2d c d)]
-            x (/ (utils/determinant-2d d xdiff) div)
-            y (/ (utils/determinant-2d d ydiff) div)]
+        div (utils/determinant xdiff ydiff)]
+    (when-not (zeroish? (utils/abs div))
+      (let [d [(utils/determinant a b) (utils/determinant c d)]
+            x (/ (utils/determinant d xdiff) div)
+            y (/ (utils/determinant d ydiff) div)]
         [x y]))))
 
 (defn line-segment-intersection
   [[a b] [c d]]
   (let [pt (line-intersection [a b] [c d])]
-    (when (and pt
-               (utils/on-line? (utils/add-z pt) (mapv utils/add-z [a b]))
-               (utils/on-line? (utils/add-z pt) (mapv utils/add-z [c d])))
+    (when
+        (and pt
+             (utils/on-line? (utils/add-z pt) (mapv utils/add-z [a b]))
+             (utils/on-line? (utils/add-z pt) (mapv utils/add-z [c d])))
       pt)))
 
-(defn identical-polygons?
+#+end_src
+
+** polygon-intersection
+For consideration:
+
+- find a way to pre-filter lines out of the for loop to keep things more efficient.
+  - two large polygons (in terms of number of points) will slow down the computation
+- identical-polygon? is only going to be true when points are literally holding the same values. This is very unlikely to be true most of the time. A better solution is to use EPS and absolute distance... but here we might have inefficiencies due to sqrt in the distance calc.
+
+#+begin_src clojure :tangle ./src/forge/geom.cljc
+(defn- identical-polygon?
   [pga pgb]
   (= (into #{} pga)
      (into #{} pgb)))
 
-(defn- close-pts
-  [pts]
-  (vec (take (inc (count pts)) (cycle pts))))
-
 (defn polygon-intersection
   [pga pgb]
-  (when (not (identical-polygons? pga pgb))
-    (let [lines-a (partition 2 1 (close-pts pga))
-          lines-b (partition 2 1 (close-pts pgb))
+  (when-not (identical-polygon? pga pgb)
+    (let [lines-a (utils/edges pga)
+          lines-b (utils/edges pgb)
           s (for [la lines-a
                   lb lines-b]
               (line-segment-intersection la lb))]
       (->> s
-           (filter (complement nil?))
-           (into #{})
-           (vec)))))
+           (remove nil?)
+           distinct
+           #_vec))))
+
+#_(let [pga (utils/regular-polygon-pts 120 200)
+      #_[[0 0] [200 0] [0 200]]
+      pgb (map #(utils/v+ % [50.0 100.0]) (utils/regular-polygon-pts 120 200)
+               #_[[-100.0 100.0] [150.0 100.0] [150.0 -100.0]])
+      xs (polygon-intersection pga pgb)]
+  (svg-clj.tools/cider-show
+   (svg-clj.elements/g
+    (when (< 0 (count xs))
+      (map #(-> (svg-clj.elements/circle 3)
+                (svg-clj.transforms/translate %)
+                (svg-clj.transforms/style {:fill "limegreen"})) xs))
+    (-> (svg-clj.elements/polygon pga)
+        (svg-clj.transforms/style {:fill "none" :stroke "blue"}))
+    (-> (svg-clj.elements/polygon pgb)
+        (svg-clj.transforms/style {:fill "none" :stroke "blue"})))))
 
 #+end_src
 
-continue the algorithm...
-
- - point inside?
-   - line to right... count intersections even = outside, odd = inside, 0 = outside (but only works for convex polygons)
-     - need to consider parallel lines and vertices changing the intersection count (for concanve polygon)
-
-#+begin_src clojure :tangle ./src/forge/geom.cljc
-(defn pt-inside-convex?
-  [pts pt]
-  (let [m (mapv float (midpoint pts))
-        xs (polygon-intersection pts [m pt])]
-    ;; pt inside when count intersection = 0
-    ;; pt inside when intersection = pt
-    (or (= 0 (count xs))
-        (utils/all-nearly? (first xs) pt))))
-
-(defn pt-inside-convex-strict?
-  [pts pt]
-  (let [m (mapv float (midpoint pts))
-        xs (polygon-intersection pts [m pt])]
-    (utils/all-nearly? (first xs) pt)))
-
-(defn quadrant
-  [x y]
-  (let [mask [(pos? x) (pos? y)]]
-    (cond (= mask [ true  true]) 1
-          (= mask [false  true]) 2
-          (= mask [false false]) 3
-          (= mask [ true false]) 4)))
-#+end_src
-
-The angle-from-pts2 implementation has an issue with ambiguity of quadrant. take [1 0] and [0 1] (and [-1 0] and [0 -1]). The zero isn't positive or negative so causes incorrect quadrant classification which breaks the conditional branch logic.
-
-#+begin_src clojure :tangle ./src/forge/geom.cljc
-(defn angle-from-pts2 
-  "Angle following RHR from p3p2 to p1p2"
-  [p1 p2 p3]
-  (let [[ax ay] (utils/v- p1 p2)
-        [bx by] (utils/v- p3 p2)
-        qa (quadrant ax ay)
-        qb (quadrant bx by)
-        theta-a (utils/to-deg (Math/atan2 ay ax))
-        theta-b (utils/to-deg (Math/atan2 by bx))]
-    (cond 
-      ;; la and lb both in same quadrant, always < 90deg
-      (= qa qb) (- theta-b theta-a)
-      ;; qa greater than qb and 2 away [4 2] or [3 1]
-      (= 2 (- qa qb)) (- 360 theta-b theta-a)
-      ;; qb greater than qa and 2 away [2 4] or [1 3]
-      (= 2 (- qb qa)) (- theta-b theta-a)
-      (or
-       (= [qa qb] [2 1])
-       (= [qa qb] [4 3])) (- 180 (Math/abs theta-b) (Math/abs theta-a))
-      (or
-       (= [qa qb] [1 2])
-       (= [qa qb] [3 4])) (+ 180 (Math/abs theta-b) (Math/abs theta-a))
-      (or
-       (= [qa qb] [3 2])
-       (= [qa qb] [1 4])) (+ (Math/abs theta-b) (Math/abs theta-a))
-      (or
-       (= [qa qb] [2 3])
-       (= [qa qb] [4 1])) (+ 180 (Math/abs theta-b) (Math/abs theta-a)))))
-
-(defn acute?
-  [p1 p2 p3]
-  (< (angle-from-pts2 p1 p2 p3) 180.0))      
-
-(defn line?
-  [[a b c]]
-  (utils/on-line-inf? (utils/add-z a) (mapv utils/add-z [b c])))
-
-(defn contains-value?
-  [coll val]
-  (when (some #{val} coll) true))
-
-(defn vecdiff
-  [va vb]
-  (into [] (filter (complement (partial contains-value? vb)) va))) 
-
-(defn simplify-segments
-  [pts]
-  (let [triples (partition 3 1 (take (+ 2 (count pts)) (cycle pts)))
-        removable (map second (filter line? triples))]
-    (vecdiff pts removable)))
-
-;; can I use reduce instead?
-;; other recursion scheme?
-#+end_src
-
-This clip-ears algo doesn't work in all cases. For example, the shape:
-
-[2 2] [12 2] [5 7] [12 12] [2 12]
-
-incorrectly clips to these 3 triangles:
-
-- [2 2] [12 2] [5 7] (this is ok)
-- [2 2] [5 7] [12 12] (INVALID, line [2 2] [12 12] is outside original poly)
-- [2 2] [12 12] [2 12] (INVALID, line [2 2] [2 12] is outisde original poly)
-
-This is related to the fact that I don't check for angles at all.
-
-Idea is that I can take any point to clip as long as its angle is less than 180 degrees. If it is greater, try next point, etc. Eventually, you can clip all ears away as remaining lines will eventually be less than 180 degrees.
-
-My angles-from-pts fn needs to be changed because it will only report the smaller angle between lines. I need the angle from line 1 to line 2 even if it is > 180, otherwise I can't detect incorrect triangles.
-
-#+begin_src clojure :tangle ./src/forge/geom.cljc
-(defn clip-ears
-  ([pts]
-   (clip-ears pts []))
-  
-  ([pts acc]
-   (let [spts (simplify-segments pts)
-         tris (->> (cycle spts)
-                   (partition 3 1)
-                   (take (count spts))
-                   (filter #(apply acute? %))
-                   (mapv #(into [] %)))
-         tri (first (for [tri tris]
-                      (let [xpts (remove (into #{} tri) (into #{} spts))
-                            clear (= 0 (count (filter #(pt-inside-convex? tri %) xpts)))]
-                        (when clear tri))))
-         npts (if tri 
-                (->> spts
-                     (filter (complement #{(second tri)}))
-                     (into []))
-                (->> spts
-                     (cycle)
-                     (drop 1)
-                     (take (count spts))
-                     (into [])))
-         acc (if tri (conj acc tri) acc)]
-     (if (> (count npts) 2)
-       (recur npts acc)
-       acc))))
-
-(defn pt-inside?
-  [pts pt]
-  (let [tris (clip-ears pts)]
-    (->> tris
-         (map #(pt-inside-convex? % pt))
-         (filter true?)
-         (empty?)
-         (not))))
-
-#+end_src
-
-- get intersectin points of polygons
-- if zero, done if one, done, else, continue
-- remove pgb points that are inside pga
-- remove pga points that are inside pgb
-- trim pga lines to intersectin points
-- trim pgb lines to intersection points
-- combine pga pts, intersectin points, and pgb points
-  - order matters... not sure how to preserve that yet.
-
+** trim
 #+begin_src clojure :tangle ./src/forge/geom.cljc
 (defn trim
   "Trim line a using line b."
@@ -1085,28 +1082,29 @@ My angles-from-pts fn needs to be changed because it will only report the smalle
            (partition 2 1)
            (mapv vec)))))
 
+#_(let [la [[0.0 0.0] [200.0 300.0]]
+      lb [[0.0 120.0] [250.0 80.0]]
+      [lc ld] (trim la lb)
+      xs [(line-intersection la lb)]]
+  (svg-clj.tools/cider-show
+   (svg-clj.elements/g
+    (when (< 0 (count xs))
+      (map #(-> (svg-clj.elements/circle 3)
+                (svg-clj.transforms/translate %)
+                (svg-clj.transforms/style {:fill "limegreen"})) xs))
+    (-> (svg-clj.elements/polyline la)
+        (svg-clj.transforms/style {:fill "none" :stroke "blue"}))
+    (-> (svg-clj.elements/polyline lb)
+        (svg-clj.transforms/style {:fill "none" :stroke "blue"}))
+    (-> (svg-clj.elements/polyline lc)
+        (svg-clj.transforms/style {:fill "none" :stroke "red"}))
+    (-> (svg-clj.elements/polyline ld)
+        (svg-clj.transforms/style {:fill "none" :stroke "green"})))))
+
 #+end_src
 
-- instead of creating lists of points, create lists of line segments that make each polygon
-
-- for segments with intersections, just trim them and only keep the trimmed parts
-
-- flatten the list of all these segments together
-
-- then, remove all segments that lie inside either of the originals
-
-- re-order the line list by 'chaining' (reverse of (partition 2 1))...
-
-- map drop-last over list of lines... should give a correct ordering of pts
-
+** polygon-union
 #+begin_src clojure :tangle ./src/forge/geom.cljc
-(defn polygon->lines 
-  [pg]
-  (->> pg
-       (cycle)
-       (take (inc (count pg)))
-       (partition 2 1)))
-
 (defn endpoint?
   [l pt]
   (or (= (first l) pt)
@@ -1114,9 +1112,7 @@ My angles-from-pts fn needs to be changed because it will only report the smalle
 
 (defn on-perimeter?
   [pg pt]
-  (let [pt (utils/add-z pt)
-        pg (mapv utils/add-z pg)
-        lines (polygon->lines pg)]
+  (let [lines (utils/edges pg)]
     (> (count (filter (partial utils/on-line? pt) lines)) 0)))
 
 (defn order-lines
@@ -1129,39 +1125,63 @@ My angles-from-pts fn needs to be changed because it will only report the smalle
      (if (= (count lines) (count sorted))
        (mapv first sorted)
        (recur lines next (conj sorted next))))))
-#+end_src
 
-*** polygon-union
-#+begin_src clojure :tangle ./src/forge/geom.cljc
+(defn- pt-inside?
+  [pg pt]
+  (let [tris (:tris (clip-ears/triangulate pg))]
+    (= #{true false}
+       (set (map #(utils/pt-inside? % pt) tris)))))
+
 (defn polygon-union
   [pga pgb]
   (let [xs (polygon-intersection pga pgb)
         ;; trim lines at intersection points
         ls (apply concat 
-                  (for [l (mapv vec (mapcat polygon->lines [pga pgb]))]
+                  (for [l (mapcat utils/edges [pga pgb])]
                     (let [trims (->> #_(map #(trim-at-pts l [%]) xs)
                                      [(trim-at-pts l xs)]
-                                     (filter #(not (nil? %))))]
+                                     #_(filter #(not (nil? %))))]
                       (if (> (count trims) 0)
                         (apply concat trims)
                         [l]))))
         ;; remove degenerate lines (= pta ptb)
         ls (filter #(not (= (first %) (second %))) ls)
         ;; get lines that are not in polygon a
-        a (filter #(not (pt-inside? pga (midpoint %))) ls)
+        a (filter #(not (pt-inside? pga (utils/centroid-of-pts %))) ls)
         ;; get lines that are not in polygon b
-        b (filter #(not (pt-inside? pgb (midpoint %))) ls)
+        b (filter #(not (pt-inside? pgb (utils/centroid-of-pts %))) ls)
         ;; get lines with midpoints on both perimeters
-        c (filter #(and (on-perimeter? pga (midpoint %))
-                        (on-perimeter? pgb (midpoint %))) ls)]
-    (->> (concat a b c)
-         (filter (complement nil?))
-         (into #{})
-         (order-lines))))
+        c (filter #(and (on-perimeter? pga (utils/centroid-of-pts %))
+                        (on-perimeter? pgb (utils/centroid-of-pts %))) ls)]
+    a #_(->> (concat a b c)
+         (remove nil?)
+         distinct
+         #_(order-lines))))
+
+(let [col #(first (shuffle ["blue" "red" "green" "white" "limegreen" "skyblue" "slategray" "gray"
+                            "cyan" "yellow" "magenta" "pink" "hotpink" "black"]))
+      pga (utils/regular-polygon-pts 120 8)
+      pgb (map #(utils/v+ % [70.0 71.0]) (utils/regular-polygon-pts 120 8))
+      pgc (polygon-union pga pgb)
+      xs (polygon-intersection pga pgb)]
+  (svg-clj.tools/cider-show
+   (svg-clj.elements/g
+    (when (< 0 (count xs))
+      (map #(-> (svg-clj.elements/circle 3)
+                (svg-clj.transforms/translate %)
+                (svg-clj.transforms/style {:fill "limegreen"})) xs))
+    (-> (svg-clj.elements/polygon pga)
+        (svg-clj.transforms/style {:fill "none" :stroke "blue"}))
+    (-> (svg-clj.elements/polygon pgb)
+        (svg-clj.transforms/style {:fill "none" :stroke "blue"}))
+    #_(-> (svg-clj.elements/polygon (apply concat pgc))
+        (svg-clj.transforms/style {:fill "none" :stroke "red"}))
+    (map #(-> (apply svg-clj.elements/line %)
+              (svg-clj.transforms/style {:stroke (col) #_"limegreen"})) pgc))))
 
 #+end_src
 
-*** polygon-difference
+** polygon-difference
 #+begin_src clojure :tangle ./src/forge/geom.cljc
 (defn polygon-difference
   "Polygon B Cuts Polygon A"
@@ -1169,7 +1189,7 @@ My angles-from-pts fn needs to be changed because it will only report the smalle
   (let [xs (polygon-intersection pga pgb)
         ;; trim lines at intersection points
         ls (apply concat 
-                  (for [l (mapv vec (mapcat polygon->lines [pga pgb]))]
+                  (for [l (mapv vec (mapcat utils/edges [pga pgb]))]
                     (let [trims (->> #_(map #(trim-at-pts l [%]) xs)
                                      [(trim-at-pts l xs)]
                                      (filter #(not (nil? %))))]
@@ -1209,7 +1229,7 @@ My angles-from-pts fn needs to be changed because it will only report the smalle
         xb (utils/v+ b pd)]
     [xa xb]))
 
-(defn cycle-pairs
+(defn- cycle-pairs
   [pts]
   (let [n (count pts)]
     (vec (take n (partition 2 1 (cycle pts))))))
@@ -1223,54 +1243,65 @@ My angles-from-pts fn needs to be changed because it will only report the smalle
   [s]
   (conj (drop-last s) (last s)))
 
-(defn offset
+(defn offset-pts
   [pts d]
   (let [edges (cycle-pairs pts)
         opts (mapcat #(offset-edge % d) edges)
         oedges (every-other (cycle-pairs opts))
         edge-pairs (cycle-pairs oedges)]
     (wrap-list-once (map #(apply line-intersection %) edge-pairs))))
+#+end_src
+
+** hull
+#+begin_src clojure :tangle ./src/forge/geom.cljc
+(defn hull
+  ([pts] (hull [{:pt (first (sort-by first pts))}] pts))
+  ([acc pts]
+   (if (or
+        ;; stop the process if acc grows larger than the pts count
+        (> (count acc) (count pts))
+        ;; *should* always end where the last added point closes the poly
+        (and (< 1 (count acc))
+             (= (:pt (first acc)) (:pt (last acc)))))
+     (map :pt (drop-last acc))
+     (let [prev (:pt (last acc))
+           dir (if (= 1 (count acc))
+                 (utils/v+ [0 1] prev)
+                 (:pt (last (drop-last acc))))
+           f (fn [pt]
+               (let [a (when (= 3 (count (into #{} [dir prev pt])))
+                         (utils/angle-from-pts dir prev pt))]
+                 {:pt pt :angle a}))
+           sorted (->> (map f pts)
+                       (remove #(nil? (:angle %)))
+                       (sort-by #(utils/abs (- (:angle %) 180))))]
+       (recur (conj acc (first sorted)) pts)))))
+
+(defn nested-hull
+  ([pts] (nested-hull [] pts))
+  ([acc pts]
+   (if (> 3 (count pts))
+     acc
+     (let [hull (hull pts)
+           npts (remove (set hull) pts)]
+       (recur (conj acc hull) npts)))))
 
 #+end_src
+
 * delaunay
 This is (for now) a copy from:
- https://github.com/trystan/delaunay-triangulation
+https://github.com/trystan/delaunay-triangulation
 
- I have to change this to work on 3D points. It currently drops any Z values.
+I have to change this to work on 3D points. It currently drops any Z values.
 
 #+BEGIN_SRC clojure :tangle ./src/forge/delaunay.cljc
 (ns forge.delaunay
-  (:require [clojure.set]))
-
-;; move these to geom ns?
-(def abs #?(:clj #(Math/abs %)
-            :cljs #(js/Math.abs %)))
-
-(def pow #?(:clj #(Math/pow %1 %2)
-            :cljs #(js/Math/pow %1 %2)))
-
-(defn rand-int-pt
-  ([n]
-   (rand-int-pt n n))
-
-  ([nx ny]
-   [(rand-int nx) (rand-int ny)]))
-
-(defn random-points
-  ([n]
-   (random-points n n))
-
-  ([nx ny]
-   (repeatedly #(rand-int-pt nx ny))))
-
-(defn grid-points
-  [cell-x cell-y n-xcells n-ycells]
-  (for [nx (range n-xcells)
-        ny (range n-ycells)]
-    [(* cell-x nx) (* cell-y ny)]))
+  (:require [clojure.set :as set]
+            [forge.utils :as utils]))
 
 ;; https://gist.github.com/mutoo/5617691
-(defn circumscribe-triangle [[[ax ay] [bx by] [cx cy]]]
+(defn- circumscribe-tri
+  [[[ax ay] [bx by] [cx cy]]]
   (let [A (- bx ax)
         B (- by ay)
         C (- cx ax)
@@ -1278,54 +1309,97 @@ This is (for now) a copy from:
         E (+ (* A (+ ax bx)) (* B (+ ay by)))
         F (+ (* C (+ ax cx)) (* D (+ ay cy)))
         G (* 2 (- (* A (- cy by)) (* B (- cx bx))))]
-    (when (> (abs G) 0.000001)
+    (when (> (utils/abs G) 0.000001)
       (let [cx (/ (- (* D E) (* B F)) G)
             cy (/ (- (* A F) (* C E)) G)
             dx (- cx ax)
             dy (- cy ay)
-            r  (+ (pow dx 2) (pow dy 2))]
+            r  (+ (utils/pow dx 2) (utils/pow dy 2))]
         {:x cx :y cy :radius-squared r}))))
 
-(defn edges [[p1 p2 p3]] [[p1 p2] [p2 p3] [p3 p1]])
+(defn- edges
+  [pts]
+  (partition 2 1 (conj (vec pts) (first pts))))
 
-(defn contains-point? [{:keys [x y radius-squared]} [px py]]
-  (let [distance-squared (+ (pow (- x px) 2) (pow (- y py) 2))]
+(defn- contains-pt?
+  [{:keys [x y radius-squared]} [px py]]
+  (let [distance-squared (utils/distance-squared [x y] [px py])]
     (< distance-squared radius-squared)))
 
-(defn outer-edges [triangles]
-  (let [all-edges    (mapcat edges triangles)
-        matches      (fn [edge] (filter #{edge (reverse edge)} all-edges))
+(defn- outer-edges
+  [tris]
+  (let [all-edges (mapcat edges tris)
+        matches (fn [edge] (filter #{edge (reverse edge)} all-edges))
         appears-once (fn [edge] (= (count (matches edge)) 1))]
     (filter appears-once all-edges)))
 
-(defn make-new-triangles [containers point]
+(defn- make-new-tris
+  [containers pt]
   (->> containers
        outer-edges
-       (map (fn [[p1 p2]] [p1 p2 point]))
+       (map (fn [[p1 p2]] [p1 p2 pt]))
        set))
 
-(defn add-point-to-triangles [triangles point]
-  (let [containers    (filter #(contains-point? (circumscribe-triangle %) point) triangles)
-        new-triangles (make-new-triangles containers point)]
-    (clojure.set/union (clojure.set/difference triangles containers) new-triangles)))
-
-(defn bounds [points]
-  (let [minx (->> points (map first) (apply min) (+ -1000))
-        maxx (->> points (map first) (apply max) (+ 1000))
-        miny (->> points (map second) (apply min) (+ -1000))
-        maxy (->> points (map second) (apply max) (+ 1000))]
-    [[minx maxy] [maxx maxy] [minx miny] [maxx miny]]))
+(defn- add-pt-to-tris
+  [tris pt]
+  (let [containers (filter #(contains-pt? (circumscribe-tri %) pt) tris)
+        new-tris (make-new-tris containers pt)]
+    (set/union (set/difference tris containers) new-tris)))
 
 ;; http://paulbourke.net/papers/triangulate/
-(defn triangulate [points]
-  (let [points (map (fn [[x y]] [(float x) (float y)]) points)
-        [tl tr bl br] (bounds points)
+(defn triangulate
+  [pts]
+  (let [pts (map (fn [[x y]] [(float x) (float y)]) pts)
+        pt-indices (zipmap pts (range 0 (count pts)))
+        [bl br tr tl] (map #(utils/v* % [2 2]) (utils/bounds-of-pts pts))
         initial #{[tl tr bl] [bl tr br]}
-        with-bounds (reduce add-point-to-triangles initial points)
-        triangles (remove #(some #{tl tr bl br} %) with-bounds)]
-    {:points points
-     :triangles triangles
-     :edges (distinct (mapcat edges triangles))}))
+        with-bounds (reduce add-pt-to-tris initial pts)
+        tris (remove #(some #{tl tr bl br} %) with-bounds)
+        tri-indices (fn [tri] (mapv #(get pt-indices %) tri))]
+    {:pts pts
+     :tris tris
+     :tri-indices (map tri-indices tris)
+     :edges (distinct (mapcat edges tris))}))
+
+#+END_SRC
+
+* clip-ears
+#+BEGIN_SRC clojure :tangle ./src/forge/clip_ears.cljc
+(ns forge.clip-ears
+  (:require [clojure.set]
+            [forge.utils :as utils]))
+
+(defn remove-colinears
+  [pts]
+  (let [indices (zipmap pts (range (count pts)))
+        tris (partition 3 1 (concat pts (take 2 pts)))
+        clpts (set (map second (filter #(apply utils/colinear? %) tris)))
+        xindices (vals (apply dissoc indices clpts))]
+    (map #(get pts %) xindices)))
+
+(defn- clip-one-ear
+  [pts]
+  (let [pts (vec pts)
+        indices (zipmap pts (range (count pts)))
+        corners (->> pts
+                     (#(concat % (take 2 %)))
+                     (partition 3 1)
+                     (filter #(#{:convex} (apply utils/corner-condition %))))
+        clear? (fn [corner]
+                 (not (seq (filter #(utils/pt-inside? corner %) pts))))
+        tri (first (filter clear? corners))]
+    {:pts pts
+     :npts (mapv #(get pts %) (sort (vals (dissoc indices (second tri)))))
+     :tri tri}))
+
+(defn triangulate
+  ([pts] (triangulate {:indices (zipmap pts (range (count pts)))} pts [] []))
+  ([data pts tris indices]
+   (if (< (count pts) 3)
+     (merge data {:tris tris :tri-indices indices})
+     (let [{:keys [npts tri]} (clip-one-ear pts)
+           local-indices (mapv #(get (:indices data) %) tri)]
+       (recur data npts (conj tris tri) (conj indices local-indices))))))
 
 #+END_SRC
 * frep
@@ -1648,9 +1722,433 @@ alt conditional for checkign c
 #+END_SRC
 
 * brep
-** ns
-#+begin_src clojure :tangle ./src/forge/brep.cljc
-(ns forge.brep
+** brep.curves
+*** design
+The parametric functions return a function expecting a parameter, denoted as t by convention.
+
+Given a parametric function, you can pass in a parameter t with a value anywhere between 0 and 1. The function is then expected to return a position. It can be an n-dimensional position, but in SVG-CLJ, it is almost always 2D point [x y].
+
+In my library, I am using a 0-arity call to any parametric function to return a map of details about that curve. This means that every function that 'constructs' one of these parametric functions must properly generate this map.
+
+The required keys for the curve map are:
+
+#+begin_src clojure
+{:fn `fn-symbol
+ :input [arg1 arg2 ...]
+ :origin [0 0]
+ :length "length of curve, exact if possible, estimated otherwise"
+ :vertex-params "t values where the curve equals the input vertices."}
+#+end_src
+
+Additionally, it is required that any parametric function that modifies a function (transforms) also matches this 0-arity scheme. This is because certain algorithms will be built requiring data from these keys, in particular, :length is valuable to have basically pre-calculated when the curve is first created.
+
+Finally, it must be true that (f 0) and (f 1) are valid points, not nil.
+
+*** ns
+#+begin_src clojure :tangle ./src/forge/brep/curves.cljc
+(ns forge.brep.curves
+  (:require [clojure.string :as str]
+            [forge.utils :as utils]
+            [forge.geom :as geom]
+            [forge.delaunay :as delaunay]
+            [forge.clip-ears :as clip-ears]
+            [same :refer [ish? zeroish?]]))
+
+#+end_src
+
+*** parametric-validator
+A utility for checking validity of a parametric function based on the design requirements, in particular of the zero-arity function.
+
+There are also some checks for validity at (f 0) and (f 1) since the end conditions can sometimes get confusing and break down.
+
+One assumption made is that (f 0.5) will be valid in terms of the dimensionality of the curve. For now, this is perhaps a sufficient assumption for checks.
+
+This check does not determine yet if the implied function from :fn :input will be equivalent. This may be a feature to build into a full-check-parametric or something later on. For now, I'm not worrying about that.
+
+#+begin_src clojure :tangle ./src/forge/brep/curves.cljc
+(defn check-parametric
+  [f]
+  (let [fdata (try (f) (catch #?(:cljs :default :clj Exception) e))
+        [f0 f05 f1] (map f [0 0.5 1])
+        t0 (if (seqable? f0) f0 [f0])
+        t05 (if (seqable? f05) f05 [f05])
+        t1 (if (seqable? f1) f1 [f1])
+        dim (count t05)
+        required [:fn :input :vertex-params :length :origin]
+        keys-pred (every? #(contains? fdata %) required)
+        t0-pred (and t0 (= (count t0) dim) (every? number? t0))
+        t1-pred (and t1 (= (count t1) dim) (every? number? t1))
+        missing (when-not keys-pred (remove (set (keys fdata)) (set required)))
+        result {:dimension dim
+                :data fdata
+                :valid-data keys-pred
+                :valid-t0 t0-pred
+                :valid-t1 t1-pred}]
+    (cond-> result
+      missing       (assoc-in [:error :missing] missing)
+      (not fdata)   (assoc-in [:error :invalid-0-arity] fdata)
+      (not t0-pred) (assoc-in [:error :invalid-t0] t0)
+      (not t1-pred) (assoc-in [:error :invalid-t1] t1))))
+
+(defn valid-parametric?
+  [f]
+  (nil? (:error (check-parametric f))))
+
+#+end_src
+
+*** arc-length
+#+begin_src clojure :tangle ./src/forge/brep/curves.cljc
+(defn arc-length
+  ([curve] (arc-length curve 0 1))
+  ([curve t] (arc-length curve 0 t))
+  ([curve ta tb]
+   (let [seg 13500
+         start (/ (* ta seg) seg)
+         end   (/ (inc (* tb seg)) seg)]
+     (->> (range start end (/ 1 seg))
+          (map curve)
+          (partition 2 1)
+          (map #(apply utils/distance %))
+          (reduce +)
+          (#(utils/round % 5))))))
+
+#+end_src
+
+*** remap
+#+begin_src clojure :tangle ./src/forge/brep/curves.cljc
+(defn- remap-within
+  [f [start end] x]
+  (when (and (>= x start) (< x end))
+    (let [step (- end start)
+          t (/ (- x start) step)]
+      (f t))))
+
+#+end_src
+
+*** line
+#+begin_src clojure :tangle ./src/forge/brep/curves.cljc
+(defn line
+  [a b]
+  (fn
+    ([] {:fn `line
+         :input [a b]
+         :origin (utils/centroid-of-pts [a b])
+         :vertex-params [0 1]
+         :length (utils/distance a b)})
+    ([t]
+     (cond
+       (= (float t) 0.0) a
+       (= (float t) 1.0) b
+       :else
+       (utils/v+ a (utils/v* (utils/v- b a) (repeat t)))))))
+
+(defn fastline
+  [[ax ay :as a] [bx by :as b]]
+  (let [[vx vy] (utils/v- b a)]
+    (fn [t]
+      [(+ ax (* vx t))
+       (+ ay (* vy t))])))
+
+#+end_src
+
+*** polyline
+#+begin_src clojure :tangle ./src/forge/brep/curves.cljc
+(defn polyline
+  [pts]
+  (let [step (/ 1.0 (dec (count pts)))
+        lines (map (partial apply line) (partition 2 1 pts))
+        length (reduce + (map #(:length (%)) lines))
+        intervals (->> lines
+                       (map #(:length (%)))
+                       (reductions +)
+                       (concat [0])
+                       (map #(/ % length))
+                       (partition 2 1))]
+    (fn
+      ([] {:fn `polyline
+           :input [pts]
+           :origin (utils/centroid-of-pts pts)
+           :vertex-params (concat [0] (mapv second intervals))
+           :length length})
+      ([t]
+       (cond
+         (= (float t) 0.0) (first pts)
+         (= (float t) 1.0) (last pts)
+         :else
+         (first
+          (filter some?
+                  (map #(remap-within %1 %2 t) lines intervals))))))))
+
+#+end_src
+
+*** polygon
+#+begin_src clojure :tangle ./src/forge/brep/curves.cljc
+(defn polygon
+  [pts]
+  (let [pts (concat (vec pts) [(first pts)])
+        step (/ 1.0 (dec (count pts)))
+        lines (map (partial apply line) (partition 2 1 pts))
+        length (reduce + (map #(:length (%)) lines))
+        intervals (->> lines
+                       (map #(:length (%)))
+                       (reductions +)
+                       (concat [0])
+                       (map #(/ % length))
+                       (partition 2 1))]
+    (fn
+      ([] {:fn `polygon
+           :input [pts]
+           :origin (utils/centroid-of-pts pts)
+           :vertex-params (concat [0] (mapv second intervals))
+           :length (reduce + (map #(:length (%)) lines))})
+      ([t]
+       (cond
+         (= (float t) 0.0) (first pts)
+         (= (float t) 1.0) (last pts)
+         :else
+         (first
+          (filter some?
+                  (map #(remap-within %1 %2 t) lines intervals))))))))
+
+#+end_src
+
+*** circle
+#+begin_src clojure :tangle ./src/forge/brep/curves.cljc
+(defn circle
+  ([r]
+   (fn
+     ([] {:fn `circle
+          :input [r]
+          :origin [0 0]
+          :vertex-params [0]
+          :length (* Math/PI 2 r)})
+     ([t]
+      (let [t (* 2 Math/PI t)
+            x (* r (Math/cos t))
+            y (* r (Math/sin t))]
+        [x y]))))
+
+  ([a b c]
+   (let [[a b c] (map #(conj % 0) [a b c])
+         n (utils/normalize (utils/normal a b c))
+         r (utils/radius-from-pts a b c)
+         cp (utils/arc-center-from-pts a b c)
+         u (utils/normalize (utils/v- a cp))
+         v (utils/cross* n u)]
+     (fn
+       ([] {:fn `circle
+            :input [a b c]
+            :origin cp
+            :vertex-params [0]
+            :length (* Math/PI 2 r)
+            :radius r})
+       ([t]
+       (cond
+         (or (< t 0.0) (> t 1.0)) nil
+         (= (float t) 0.0) (vec (drop-last a))
+         (= (float t) 1.0) (vec (drop-last a))
+         :else
+         (let [t (* 2 Math/PI t)]
+           (mapv 
+            #(utils/round % 5)
+            (drop-last 
+             (utils/v+ cp
+                       (utils/v* (repeat (* r (Math/cos t))) u)
+                       (utils/v* (repeat (* r (Math/sin t))) v)))))))))))
+
+#+end_src
+
+*** arc
+#+begin_src clojure :tangle ./src/forge/brep/curves.cljc
+(defn arc
+  [a b c]
+  (let [[a b c] (map #(conj % 0) [a b c])
+        f (circle a b c)
+        cp (utils/arc-center-from-pts a b c)
+        angle (utils/angle-from-pts a cp c)
+        r (utils/radius-from-pts a b c)]
+    (fn
+      ([] {:fn `arc
+           :input [a b c]
+           :origin cp
+           :vertex-params [0 1]
+           :length (* Math/PI 2 r (/ angle 360))
+           :radius r
+           :center cp})
+      ([t]
+       (let [t (* t (/ angle 360.0))]
+         (f t))))))
+
+#+end_src
+
+*** ellipse
+#+begin_src clojure :tangle ./src/forge/brep/curves.cljc
+;; https://www.mathsisfun.com/geometry/ellipse-perimeter.html
+;; uses 'Infinite Series 2' exact calc. using 4 terms.
+(defn- ellipse-perimeter
+  [rx ry]
+  (let [h (/ (Math/pow (- rx ry) 2)
+             (Math/pow (+ rx ry) 2))]
+    (* Math/PI (+ rx ry)
+       (+ 1
+          (* h (/ 1 4))
+          (* h h (/ 1 64))
+          (* h h h (/ 1 256))))))
+
+(defn ellipse
+  [rx ry]
+  (fn 
+    ([] {:fn `ellipse
+         :input [rx ry]
+         :origin [0 0]
+         :vertex-params [0]
+         :length (ellipse-perimeter rx ry)})
+    ([t]
+     (let [t (* 2 Math/PI t)
+           x (* rx (Math/cos t))
+           y (* ry (Math/sin t))]
+       [x y]))))
+
+#+end_src
+
+*** bezier
+#+begin_src clojure :tangle ./src/forge/brep/curves.cljc
+(defn- quadratic-bezier
+  [a b c]
+  (fn [t]
+    (let [l1 (fastline a b)
+          l2 (fastline b c)
+          l3 (fastline (l1 t) (l2 t))]
+      (l3 t))))
+
+(defn- bezier*
+  [pts]
+  (if (= 3 (count pts))
+    (apply quadratic-bezier pts)
+    (let [lines (map #(apply fastline %) (partition 2 1 pts))] 
+      (fn
+        [t]
+        (let [npts (map #(% t) lines)]
+          ((bezier* npts) t))))))
+
+(defn bezier
+  [pts]
+  (let [curve (bezier* pts)
+        length (arc-length curve)]
+    (fn
+      ([] {:fn `bezier
+           :input [pts]
+           :origin (utils/centroid-of-pts pts)
+           :vertex-params [0 1]
+           :length length})
+      ([t] (curve t)))))
+
+#+end_src
+
+*** rational-bezier
+#+begin_src clojure :tangle ./src/forge/brep/curves.cljc
+(defn- next-pascal
+  [row]
+  (vec (concat [(first row)]
+          (mapv #(apply + %) (partition 2 1 row))
+          [(last row)])))
+
+(defn- binomial
+  [n i]
+  (let [pascal-tri-row (last (take (inc n) (iterate next-pascal [1])))]
+  (get pascal-tri-row i)))
+
+(defn- polynomial
+  [n i t]
+  (* (Math/pow (- 1 t) (- n i)) (Math/pow t i)))
+
+(defn- half-bezier
+  [ws t]
+  (let [n (dec (count ws))
+        poly (partial polynomial n)
+        bi (partial binomial n)]
+    (reduce + (map-indexed 
+               (fn [i w]
+                 (* (bi i) (poly i t) w))
+               ws))))
+
+(defn rational-bezier*
+  [pts wts]
+  (let [xs (map #(* (first %1) %2) pts wts)
+        ys (map #(* (second %1) %2) pts wts)
+        dn (partial half-bezier wts)]
+    (fn [t]
+      [(/ (half-bezier xs t) (dn t)) 
+       (/ (half-bezier ys t) (dn t))])))
+
+(defn rational-bezier
+  [pts wts]
+  (let [curve (rational-bezier* pts wts)
+        length (arc-length curve)]
+    (fn
+      ([] {:fn `rational-bezier
+           :input [pts wts]
+           :origin (utils/centroid-of-pts pts)
+           :vertex-params [0 1]
+           :length length})
+      ([t] (curve t)))))
+
+#+end_src
+
+*** translate
+#+begin_src clojure :tangle ./src/forge/brep/curves.cljc
+(defn translate
+  [f [x y z]]
+  (let [data (f)]
+    (fn
+      ([] (merge data
+                 {:fn `translate
+                  :origin (utils/v+ (:origin data) [x y z])
+                  :input [f [x y z]]}))
+      ([t]
+       (utils/v+ (utils/add-z (f t)) [x y z])))))
+
+#+end_src
+
+*** rotate
+I need to update my requirements in my curves map design. I should include an :origin key so that rotations can be exact.
+
+#+begin_src clojure :tangle ./src/forge/brep/curves.cljc
+(defn rotate
+  [f [ax ay az]]
+  (let [data (f)
+        ctr (:origin data)]
+    (fn
+      ([] (merge data
+                 {:fn `rotate
+                  :input [f [ax ay az]]}))
+      ([t]
+       (-> (f t)
+           (utils/v+ (map - ctr))
+           (utils/rotate-point [ax ay az])
+           (utils/v+ ctr))))))
+
+#+end_src
+
+*** scale
+#+begin_src clojure :tangle ./src/forge/brep/curves.cljc
+(defn scale
+  [f [sx sy sz]]
+  (let [data (f)
+        ctr (:origin data)]
+    (fn
+      ([] (merge data
+                 {:fn `scale
+                  :input [f [sx sy sz]]}))
+      ([t]
+       (utils/scale-pt-from-center (f t) [sx sy sz] ctr)))))
+
+#+end_src
+
+** brep-old
+*** ns
+#+begin_src clojure :tangle ./src/forge/brep/old.cljc
+(ns forge.brep.old
   (:require [forge.utils :as utils]
             [forge.geom :as geom]
             [forge.delaunay :as delaunay]
@@ -1658,8 +2156,8 @@ alt conditional for checkign c
             [same :refer [ish? zeroish?]]))
 
 #+end_src
-** utils
-#+begin_src clojure :tangle ./src/forge/brep.cljc
+*** utils
+#+begin_src clojure :tangle ./src/forge/brep/old.cljc
 (defn remap-within
   [f [start end] x]
   (when (and (>= x start) (< x end))
@@ -1669,8 +2167,8 @@ alt conditional for checkign c
 
 #+end_src
 
-** line
-#+BEGIN_SRC clojure :tangle ./src/forge/brep.cljc
+*** line
+#+BEGIN_SRC clojure :tangle ./src/forge/brep/old.cljc
 (defn line
   [a b]
   (fn [t]
@@ -1683,8 +2181,8 @@ alt conditional for checkign c
 
 #+END_SRC
 
-** polyline
-#+BEGIN_SRC clojure :tangle ./src/forge/brep.cljc
+*** polyline
+#+BEGIN_SRC clojure :tangle ./src/forge/brep/old.cljc
 (defn polyline
   [pts]
   (let [step (/ 1.0 (dec (count pts)))
@@ -1701,8 +2199,8 @@ alt conditional for checkign c
 
 #+END_SRC
 
-** circle
-#+BEGIN_SRC clojure :tangle ./src/forge/brep.cljc
+*** circle
+#+BEGIN_SRC clojure :tangle ./src/forge/brep/old.cljc
 ;;https://mathforum.org/library/drmath/view/63755.html
 (defn curve-circle
   [a b c]
@@ -1733,8 +2231,8 @@ alt conditional for checkign c
 
 #+END_SRC
 
-** ellipse
-#+BEGIN_SRC clojure :tangle ./src/forge/brep.cljc
+*** ellipse
+#+BEGIN_SRC clojure :tangle ./src/forge/brep/old.cljc
 (defn curve-ellipse
   [rx ry]
   (fn [t]
@@ -1745,12 +2243,12 @@ alt conditional for checkign c
 
 #+END_SRC
 
-** arc
+*** arc
 There are 2 angle-from-pts functions. They don't both work here, even though I think they should... angle-from-pts2 causes this function to nil out in many cases.
 
 angle-from-pts only reports the small angle no matter what, so that isn't always going to produce the correct arc.
 
-#+BEGIN_SRC clojure :tangle ./src/forge/brep.cljc
+#+BEGIN_SRC clojure :tangle ./src/forge/brep/old.cljc
 (defn curve-arc
   [a b c]
   (let [f (curve-circle a b c)
@@ -1762,7 +2260,7 @@ angle-from-pts only reports the small angle no matter what, so that isn't always
 
 #+END_SRC
 
-** polygon
+*** polygon
 My frep-polygon uses a triangulation/union approach. This did break for me in some cases, so I am going to test an alternate implementation. I will port this code:
 
 
@@ -1776,17 +2274,17 @@ As well, any polygon union should effectively produce the same polygon that woul
 
 (= (union (polygon pts-a) (polygon pts-b)) (polygon pts-a pts-b))
 
-#+BEGIN_SRC clojure :tangle ./src/forge/brep.cljc
+#+BEGIN_SRC clojure :tangle ./src/forge/brep/old.cljc
 (defn curve-polygon
   [pts]
   (polyline (conj (vec pts) (first pts))))
 
 #+END_SRC
 
-** bezier
+*** bezier
 Eventually I want to generalize bezier fn to take any number of control points, but for the time being it's easier to implement cubic/quadratic bezier curves, as they have simplified algorithms.
 
-#+BEGIN_SRC clojure :tangle ./src/forge/brep.cljc
+#+BEGIN_SRC clojure :tangle ./src/forge/brep/old.cljc
 (defn- quadratic-bezier
   [a b c]
   (fn [t]
@@ -1806,10 +2304,10 @@ Eventually I want to generalize bezier fn to take any number of control points, 
 
 #+END_SRC
 
-** triangle
+*** triangle
 [[https://www.iquilezles.org/www/articles/distfunctions2d/distfunctions2d.htm]]
 
-#+BEGIN_SRC clojure :tangle ./src/forge/brep.cljc
+#+BEGIN_SRC clojure :tangle ./src/forge/brep/old.cljc
 (defn surface-triangle
   [a b c]
   (let [l1 (line b a)
@@ -1820,8 +2318,8 @@ Eventually I want to generalize bezier fn to take any number of control points, 
 
 #+END_SRC
 
-** sphere
-#+BEGIN_SRC clojure :tangle ./src/forge/brep.cljc
+*** sphere
+#+BEGIN_SRC clojure :tangle ./src/forge/brep/old.cljc
 (defn sphere
   [r]
   (fn [u v]
@@ -1833,8 +2331,8 @@ Eventually I want to generalize bezier fn to take any number of control points, 
 
 #+END_SRC
 
-** torus
-#+BEGIN_SRC clojure :tangle ./src/forge/brep.cljc
+*** torus
+#+BEGIN_SRC clojure :tangle ./src/forge/brep/old.cljc
 (defn surface-torus
   [R r]
   (fn [u v]
@@ -1846,8 +2344,8 @@ Eventually I want to generalize bezier fn to take any number of control points, 
 
 #+END_SRC
 
-** cylinder
-#+BEGIN_SRC clojure :tangle ./src/forge/brep.cljc
+*** cylinder
+#+BEGIN_SRC clojure :tangle ./src/forge/brep/old.cljc
 (defn surface-cylinder
   [r h]
   (fn [u v]
@@ -1860,32 +2358,32 @@ Eventually I want to generalize bezier fn to take any number of control points, 
 
 #+END_SRC
 
-** translate
-#+BEGIN_SRC clojure :tangle ./src/forge/brep.cljc
+*** translate
+#+BEGIN_SRC clojure :tangle ./src/forge/brep/old.cljc
 (defn translate
   [f pos]
   (comp #(utils/v+ pos %) f))
 
 #+END_SRC
 
-** rotate
-#+BEGIN_SRC clojure :tangle ./src/forge/brep.cljc
+*** rotate
+#+BEGIN_SRC clojure :tangle ./src/forge/brep/old.cljc
 (defn brep-rotate
   [f angles]
   (comp #(utils/rotate-point % angles) f))
 
 #+END_SRC
 
-** scale
-#+BEGIN_SRC clojure :tangle ./src/forge/brep.cljc
+*** scale
+#+BEGIN_SRC clojure :tangle ./src/forge/brep/old.cljc
 (defn scale
   [f scales]
   (comp #(utils/v* scales %) f))
 
 #+END_SRC
 
-** extrude
-#+BEGIN_SRC clojure :tangle ./src/forge/brep.cljc
+*** extrude
+#+BEGIN_SRC clojure :tangle ./src/forge/brep/old.cljc
 (defn curve-extrude
   [c h]
   (fn [u v]
