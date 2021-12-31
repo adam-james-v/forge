@@ -183,7 +183,7 @@
          distinct
          #_(order-lines))))
 
-(let [col #(first (shuffle ["blue" "red" "green" "white" "limegreen" "skyblue" "slategray" "gray"
+#_(let [col #(first (shuffle ["blue" "red" "green" "white" "limegreen" "skyblue" "slategray" "gray"
                             "cyan" "yellow" "magenta" "pink" "hotpink" "black"]))
       pga (utils/regular-polygon-pts 120 8)
       pgb (map #(utils/v+ % [70.0 71.0]) (utils/regular-polygon-pts 120 8))
@@ -220,20 +220,20 @@
         ;; remove degenerate lines (= pta ptb)
         ls (filter #(not (= (first %) (second %))) ls)
         ;; get lines that are in polygon a
-        a (filter #(pt-inside? pga (midpoint %)) ls)
+        a (filter #(pt-inside? pga (utils/centroid-of-pts %)) ls)
         ;; get lines that are in polygon b
-        b (filter #(pt-inside? pgb (midpoint %)) ls)
+        b (filter #(pt-inside? pgb (utils/centroid-of-pts %)) ls)
         ;; get lines with midpoints on both perimeters
-        c (filter #(and (on-perimeter? pga (midpoint %))
-                        (on-perimeter? pgb (midpoint %))) ls)]
+        c (filter #(and (on-perimeter? pga (utils/centroid-of-pts %))
+                        (on-perimeter? pgb (utils/centroid-of-pts %))) ls)]
     (->> (concat a b c)
-         (filter (complement nil?))
+         (remove nil?)
          (into #{})
          (order-lines))))
 
 (defn offset-edge
   [[a b] d]
-  (let [p (utils/perpendicular-2d (utils/v- b a))
+  (let [p (utils/perpendicular (utils/v- b a))
         pd (utils/v* (utils/normalize p) (repeat (- d)))
         xa (utils/v+ a pd)
         xb (utils/v+ b pd)]

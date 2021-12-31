@@ -287,7 +287,8 @@
     (sh "/usr/local/bin/openscad" "/dev/stdin"
         "--imgsize" "400,400"
         "--projection" "orthogonal"
-        #_"--colorscheme" #_"greenscreen" #_"Nord"
+        "--view" "edges"
+        "--colorscheme" "Tomorrow Night" #_"greenscreen" #_"Nord"
         #_"--camera" #_"0,0,0,55,0,25,2900"
         "-o" fname
         :in scad)))

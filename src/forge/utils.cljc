@@ -159,7 +159,7 @@
   [[ax ay] [bx by]]
   (/ (- by ay) (- bx ax)))
 
-(defn perpendicular-2d
+(defn perpendicular
   [[x y]]
   [(- y) x])
 
@@ -197,15 +197,19 @@
          dy (- y2 y1)]
      [(- dy) dx]))
   ([a b c]
-   (let [ab (v- a b)
-         ac (v- a c)]
-     (cross* ab ac))))
+   (let [eps 0.00001
+         ab (v- a b)
+         ac (v- a c)
+         [x y z] (cross* ab ac)]
+     (when (and (> x eps) (> y eps) (> z eps))
+       [x y z]))))
 
 (defn normalize
   "find the unit vector of a given vector"
   [v]
-  (let [m (Math/sqrt ^double (reduce + (v* v v)))]
-    (mapv / v (repeat m))))
+  (when v
+    (let [m (Math/sqrt ^double (reduce + (v* v v)))]
+      (mapv / v (repeat m)))))
 
 (defn sin-cos-pair [theta]
   [(Math/sin ^long (to-rad theta))

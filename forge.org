@@ -556,7 +556,7 @@ and re-implemented with clojure.test library.
   [[ax ay] [bx by]]
   (/ (- by ay) (- bx ax)))
 
-(defn perpendicular-2d
+(defn perpendicular
   [[x y]]
   [(- y) x])
 
@@ -594,15 +594,19 @@ and re-implemented with clojure.test library.
          dy (- y2 y1)]
      [(- dy) dx]))
   ([a b c]
-   (let [ab (v- a b)
-         ac (v- a c)]
-     (cross* ab ac))))
+   (let [eps 0.00001
+         ab (v- a b)
+         ac (v- a c)
+         [x y z] (cross* ab ac)]
+     (when (and (> x eps) (> y eps) (> z eps))
+       [x y z]))))
 
 (defn normalize
   "find the unit vector of a given vector"
   [v]
-  (let [m (Math/sqrt ^double (reduce + (v* v v)))]
-    (mapv / v (repeat m))))
+  (when v
+    (let [m (Math/sqrt ^double (reduce + (v* v v)))]
+      (mapv / v (repeat m)))))
 
 #+end_src
 
@@ -1158,7 +1162,7 @@ For consideration:
          distinct
          #_(order-lines))))
 
-(let [col #(first (shuffle ["blue" "red" "green" "white" "limegreen" "skyblue" "slategray" "gray"
+#_(let [col #(first (shuffle ["blue" "red" "green" "white" "limegreen" "skyblue" "slategray" "gray"
                             "cyan" "yellow" "magenta" "pink" "hotpink" "black"]))
       pga (utils/regular-polygon-pts 120 8)
       pgb (map #(utils/v+ % [70.0 71.0]) (utils/regular-polygon-pts 120 8))
@@ -1199,14 +1203,14 @@ For consideration:
         ;; remove degenerate lines (= pta ptb)
         ls (filter #(not (= (first %) (second %))) ls)
         ;; get lines that are in polygon a
-        a (filter #(pt-inside? pga (midpoint %)) ls)
+        a (filter #(pt-inside? pga (utils/centroid-of-pts %)) ls)
         ;; get lines that are in polygon b
-        b (filter #(pt-inside? pgb (midpoint %)) ls)
+        b (filter #(pt-inside? pgb (utils/centroid-of-pts %)) ls)
         ;; get lines with midpoints on both perimeters
-        c (filter #(and (on-perimeter? pga (midpoint %))
-                        (on-perimeter? pgb (midpoint %))) ls)]
+        c (filter #(and (on-perimeter? pga (utils/centroid-of-pts %))
+                        (on-perimeter? pgb (utils/centroid-of-pts %))) ls)]
     (->> (concat a b c)
-         (filter (complement nil?))
+         (remove nil?)
          (into #{})
          (order-lines))))
 
@@ -1223,7 +1227,7 @@ For consideration:
 #+begin_src clojure :tangle ./src/forge/geom.cljc
 (defn offset-edge
   [[a b] d]
-  (let [p (utils/perpendicular-2d (utils/v- b a))
+  (let [p (utils/perpendicular (utils/v- b a))
         pd (utils/v* (utils/normalize p) (repeat (- d)))
         xa (utils/v+ a pd)
         xb (utils/v+ b pd)]
@@ -1751,8 +1755,7 @@ Finally, it must be true that (f 0) and (f 1) are valid points, not nil.
             [forge.utils :as utils]
             [forge.geom :as geom]
             [forge.delaunay :as delaunay]
-            [forge.clip-ears :as clip-ears]
-            [same :refer [ish? zeroish?]]))
+            [forge.clip-ears :as clip-ears]))
 
 #+end_src
 
@@ -1774,7 +1777,7 @@ This check does not determine yet if the implied function from :fn :input will b
         t05 (if (seqable? f05) f05 [f05])
         t1 (if (seqable? f1) f1 [f1])
         dim (count t05)
-        required [:fn :input :vertex-params :length :origin]
+        required [:fn :input :vertex-params :dimension :length :origin]
         keys-pred (every? #(contains? fdata %) required)
         t0-pred (and t0 (= (count t0) dim) (every? number? t0))
         t1-pred (and t1 (= (count t1) dim) (every? number? t1))
@@ -1800,7 +1803,11 @@ This check does not determine yet if the implied function from :fn :input will b
 #+begin_src clojure :tangle ./src/forge/brep/curves.cljc
 (defn arc-length
   ([curve] (arc-length curve 0 1))
-  ([curve t] (arc-length curve 0 t))
+  ([curve t]
+   (let [eps 0.00001]
+     (if (< eps t)
+       (arc-length curve 0 t)
+       0)))
   ([curve ta tb]
    (let [seg 13500
          start (/ (* ta seg) seg)
@@ -1814,14 +1821,39 @@ This check does not determine yet if the implied function from :fn :input will b
 
 #+end_src
 
+*** tangent
+#+begin_src clojure :tangle ./src/forge/brep/curves.cljc
+(defn tangent
+  [curve t]
+  (let [eps 0.00001
+        a (curve (- t eps))
+        b (curve (+ t eps))
+        a (if a a (curve 0))
+        b (if b b (curve 1))]
+    (-> (utils/v- a b)
+        (utils/normalize))))
+
+#+end_src
+
+*** normal
+#+begin_src clojure :tangle ./src/forge/brep/curves.cljc
+(defn normal
+  [curve t up]
+  (let [tangent (tangent curve t)
+        binormal (utils/normalize (utils/cross* up tangent))]
+    (utils/cross* tangent binormal)))
+
+#+end_src
+
 *** remap
 #+begin_src clojure :tangle ./src/forge/brep/curves.cljc
 (defn- remap-within
-  [f [start end] x]
-  (when (and (>= x start) (< x end))
-    (let [step (- end start)
-          t (/ (- x start) step)]
-      (f t))))
+  ([[start end] x] (remap-within identity [start end] x))
+  ([f [start end] x]
+   (when (and (>= x start) (< x end))
+     (let [step (- end start)
+           t (/ (- x start) step)]
+       (f t)))))
 
 #+end_src
 
@@ -1834,6 +1866,7 @@ This check does not determine yet if the implied function from :fn :input will b
          :input [a b]
          :origin (utils/centroid-of-pts [a b])
          :vertex-params [0 1]
+         :dimension (count a)
          :length (utils/distance a b)})
     ([t]
      (cond
@@ -1869,6 +1902,7 @@ This check does not determine yet if the implied function from :fn :input will b
            :input [pts]
            :origin (utils/centroid-of-pts pts)
            :vertex-params (concat [0] (mapv second intervals))
+           :dimension (count (first pts))
            :length length})
       ([t]
        (cond
@@ -1900,6 +1934,7 @@ This check does not determine yet if the implied function from :fn :input will b
            :input [pts]
            :origin (utils/centroid-of-pts pts)
            :vertex-params (concat [0] (mapv second intervals))
+           :dimension (count (first pts))
            :length (reduce + (map #(:length (%)) lines))})
       ([t]
        (cond
@@ -1921,6 +1956,7 @@ This check does not determine yet if the implied function from :fn :input will b
           :input [r]
           :origin [0 0]
           :vertex-params [0]
+          :dimension 2
           :length (* Math/PI 2 r)})
      ([t]
       (let [t (* 2 Math/PI t)
@@ -1940,6 +1976,7 @@ This check does not determine yet if the implied function from :fn :input will b
             :input [a b c]
             :origin cp
             :vertex-params [0]
+            :dimension (count a)
             :length (* Math/PI 2 r)
             :radius r})
        ([t]
@@ -1972,6 +2009,7 @@ This check does not determine yet if the implied function from :fn :input will b
            :input [a b c]
            :origin cp
            :vertex-params [0 1]
+           :dimension (count a)
            :length (* Math/PI 2 r (/ angle 360))
            :radius r
            :center cp})
@@ -2002,6 +2040,7 @@ This check does not determine yet if the implied function from :fn :input will b
          :input [rx ry]
          :origin [0 0]
          :vertex-params [0]
+         :dimension 2
          :length (ellipse-perimeter rx ry)})
     ([t]
      (let [t (* 2 Math/PI t)
@@ -2039,9 +2078,42 @@ This check does not determine yet if the implied function from :fn :input will b
       ([] {:fn `bezier
            :input [pts]
            :origin (utils/centroid-of-pts pts)
+           :dimension (count (first pts))
            :vertex-params [0 1]
            :length length})
       ([t] (curve t)))))
+
+#+end_src
+
+*** piecewise-curve
+#+begin_src clojure :tangle ./src/forge/brep/curves.cljc
+(defn piecewise-curve
+  [curves]
+  (let [step (/ 1.0 (count curves))
+        intervals (partition 2 1 (range 0 (+ 1 step) step))
+        remapf (fn [curve [start end]]
+                 (let [vertex-params (:vertex-params (curve))
+                       sc (- end start)]
+                   (map #(+ start (* sc %)) vertex-params)))
+        vertex-params (vec (distinct (mapcat remapf curves intervals)))
+        origin (utils/centroid-of-pts (map #(:origin (%)) curves))
+        length (reduce + (map #(:length (%)) curves))
+        sample-curve (first curves)]
+    (fn
+      ([] {:fn `piecewise-curve
+           :input [curves]
+           :origin origin
+           :dimension (count (sample-curve 0.5))
+           :vertex-params vertex-params
+           :length length})
+      ([t]
+       (cond
+         (= (float t) 0.0) ((first curves) 0)
+         (= (float t) 1.0) ((last curves) 1)
+         :else
+         (first
+          (filter some?
+                  (map #(remap-within %1 %2 t) curves intervals))))))))
 
 #+end_src
 
@@ -2089,9 +2161,29 @@ This check does not determine yet if the implied function from :fn :input will b
       ([] {:fn `rational-bezier
            :input [pts wts]
            :origin (utils/centroid-of-pts pts)
+           :dimension (count (first pts))
            :vertex-params [0 1]
            :length length})
       ([t] (curve t)))))
+
+#+end_src
+
+*** to-3D
+#+begin_src clojure :tangle ./src/forge/brep/curves.cljc
+(defn to-3D
+  [curve]
+  (let [data (curve)
+        origin (utils/add-z (:origin data))]
+    (if (< (:dimension data) 3)
+      (fn
+        ([] (merge data {:fn `to-3D
+                         :input [curve]
+                         :origin origin
+                         :dimension 3}))
+        ([t]
+         (when (curve t)
+           (vec (concat (curve t) [0])))))
+      curve)))
 
 #+end_src
 
@@ -2099,11 +2191,13 @@ This check does not determine yet if the implied function from :fn :input will b
 #+begin_src clojure :tangle ./src/forge/brep/curves.cljc
 (defn translate
   [f [x y z]]
-  (let [data (f)]
+  (let [data (f)
+        f (to-3D f)]
     (fn
       ([] (merge data
                  {:fn `translate
-                  :origin (utils/v+ (:origin data) [x y z])
+                  :origin (utils/v+ (utils/add-z (:origin data)) [x y z])
+                  :dimension 3
                   :input [f [x y z]]}))
       ([t]
        (utils/v+ (utils/add-z (f t)) [x y z])))))
@@ -2117,15 +2211,18 @@ I need to update my requirements in my curves map design. I should include an :o
 (defn rotate
   [f [ax ay az]]
   (let [data (f)
-        ctr (:origin data)]
+        f (to-3D f)
+        ctr (utils/add-z (:origin data))
+        dim 3]
     (fn
       ([] (merge data
                  {:fn `rotate
-                  :input [f [ax ay az]]}))
+                  :input [f [ax ay az]]
+                  :dimension dim}))
       ([t]
        (-> (f t)
            (utils/v+ (map - ctr))
-           (utils/rotate-point [ax ay az])
+           (utils/rotate-pt [ax ay az])
            (utils/v+ ctr))))))
 
 #+end_src
@@ -2142,6 +2239,716 @@ I need to update my requirements in my curves map design. I should include an :o
                   :input [f [sx sy sz]]}))
       ([t]
        (utils/scale-pt-from-center (f t) [sx sy sz] ctr)))))
+
+#+end_src
+
+*** cut-at
+#+begin_src clojure :tangle ./src/forge/brep/curves.cljc
+(defn cut-at-t
+  "Cut curve at the parameter `t`, returning a curve from `t-start` (0 if unspecified) to `t-end`."
+  ([curve t-end] (cut-at-t curve 0 t-end))
+  ([curve t-start t-end]
+   (let [data (curve)
+         sc (- t-end t-start)
+         length (arc-length t-start t-end)]
+     (fn
+       ([] (merge data {:fn `cut-at-t
+                        :input [curve t-start t-end]
+                        :length length}))
+       ([t] (curve (+ (* t sc) t-start)))))))
+
+(defn- get-t
+  "Estimate curve parameter `t` that corresponds to length-percentage `target-lp`."
+  [curve target-lp]
+  (let [eps 0.00001
+        length (:length (curve))
+        target-l (* length target-lp)]
+    (loop [t target-lp
+           n 0]
+        (let [next-t (+ t (/ (- target-l (arc-length curve t)) target-l))]
+          (if (or
+               (= (utils/round t 4) (utils/round next-t 4))
+               (< (utils/abs (- target-l (arc-length curve t))) eps)
+               (< 300 n))
+            next-t
+            (recur next-t (inc n)))))))
+
+(defn cut-at-lp
+  "Cut curve at length-percentage `lp`."
+  ([curve l-end] (cut-at-lp curve 0 l-end))
+  ([curve l-start l-end]
+   (let [data (curve)
+         t-start (get-t curve l-start)
+         t-end (get-t curve l-end)
+         sc (- t-end t-start)
+         length (arc-length t-start t-end)]
+     (fn
+       ([] (merge data {:fn `cut-at-lp :input [curve l-start l-end]}))
+       ([t] (curve (+ (* t sc) t-start)))))))
+
+#+end_src
+
+*** look-at
+#+begin_src clojure :tangle ./src/forge/brep/curves.cljc
+;; https://stackoverflow.com/a/52551983
+(defn look-at-quaternion
+  [from to world-up]
+  (let [world-up (utils/normalize world-up)
+        [fx fy fz :as forward] (utils/normalize (utils/v- from to))
+        [rx ry rz :as right] (utils/normalize (utils/cross* world-up forward))
+        [ux uy uz :as up] (utils/cross* forward right)
+        trace (+ rx uy fz)]
+    (cond
+      (> trace 0)
+      (let [s (/ 0.5 (Math/sqrt (+ trace 1.0)))
+            x (* (- uz fy) s)
+            y (* (- fx rz) s)
+            z (* (- ry ux) s)
+            w (/ 0.25 s)]
+        [x y z w])
+
+      (and (> rx uy) (> rx fz))
+      (let [s (* 2 (Math/sqrt (+ 1 rx (- uy) (- fz))))
+            x (* 0.25 s)
+            y (/ (+ ux ry) s)
+            z (/ (+ fx rz) s)
+            w (/ (- uz fy) s)]
+        [x y z w])
+
+      (> uy fz)
+      (let [s (* 2 (Math/sqrt (+ 1 uy (- rx) (- fz))))
+            x (/ (+ ux ry) s)
+            y (* 0.25 s)
+            z (/ (+ fy uz) s)
+            w (/ (- fx rz) s)]
+        [x y z w])
+
+      :else
+      (let [s (* 2 (Math/sqrt (+ 1 fz (- rx) (- uy))))
+            x (/ (+ fx rz) s)
+            y (/ (+ fy uz) s)
+            z (* 0.25 s)
+            w (/ (- ry ux) s)]
+        [x y z w]))))
+
+(defn transform-pt-quaternion
+  [[px py pz] [x y z w]]
+  [(+ (* w w px) (* 2 y w pz) (* -2 z w py) (* x x px)
+      (* 2 y x py) (* 2 z x pz) (* -1 z z px) (* -1 y y px))
+
+   (+ (* 2 x y px) (* y y py) (* 2 z y pz) (* 2 w z px)
+      (* -1 z z py) (* w w py) (* -2 x w pz) (* -1 x x py))
+
+   (+ (* 2 x z px) (* 2 y z py) (* z z pz) (* -2 w y px)
+      (* -1 y y pz) (* 2 w x py) (* x x pz) (* w w pz))])
+
+(defn look-at
+  [f [px py pz] [ux uy uz]]
+  (let [data (f)
+        ctr (utils/add-z (:origin data))
+        dim 3]
+    (fn
+      ([] (merge data
+                 {:fn `look-at
+                  :input [f [px py pz] [ux uy uz]]
+                  :dimension dim}))
+      ([t]
+       (-> (f t)
+           utils/add-z
+           (transform-pt-quaternion (look-at-quaternion ctr [px py pz] [ux uy uz])))))))
+
+#+end_src
+
+
+** brep.surfaces
+*** design
+The brep surfaces functions return a function expecting two parameter, denoted as [u v] by convention.
+
+Given a surface function, you can pass in u v params each with a value anywhere between 0 and 1. The function is then expected to return a position. It can be an n-dimensional position, but in forge, it is almost always 3D.
+
+Surfaces are typically built up from curves, and so should have similar data requirements.
+
+:vertex-params are interesting because they actually become pairs of uv params. These are critical for creating good meshes with curves and surfaces that maintain sharp edges along boundaries, at corners, etc.
+
+*** ns
+#+begin_src clojure :tangle ./src/forge/brep/surfaces.cljc
+(ns forge.brep.surfaces
+  (:require [clojure.string :as str]
+            [forge.utils :as utils]
+            [forge.geom :as geom]
+            [forge.delaunay :as delaunay]
+            [forge.clip-ears :as clip-ears]
+            [forge.brep.curves :as c]))
+
+#+end_src
+
+*** parametric-validator
+A utility for checking validity of a parametric function based on the design requirements, in particular of the zero-arity function.
+
+There are also some checks for validity at (f 0 0) (f 0 1) (f 1 0) and (f 1 1) since the end conditions can sometimes get confusing and break down.
+
+One assumption made is that (f 0.5 0.5) will be valid in terms of the dimensionality of the curve. For now, this is perhaps a sufficient assumption for checks.
+
+This check does not determine yet if the implied function from :fn :input will be equivalent. This may be a feature to build into a full-check-parametric or something later on. For now, I'm not worrying about that.
+
+#+begin_src clojure :tangle ./src/forge/brep/surfaces.cljc
+(defn check-parametric
+  [f]
+  :not-implemented #_(let [fdata (try (f) (catch #?(:cljs :default :clj Exception) e))
+        [f00 f01 f10 f11 f0505] (map f [[0 0] [0 1] [1 0] [1 1] [0.5 0.5]])
+        t0 (if (seqable? f00) f0 [f0])
+        t05 (if (seqable? f0505) f05 [f05])
+        t1 (if (seqable? f1) f1 [f1])
+        dim (count t05)
+        required [:fn :input :vertex-params :length :origin]
+        keys-pred (every? #(contains? fdata %) required)
+        t0-pred (and t0 (= (count t0) dim) (every? number? t0))
+        t1-pred (and t1 (= (count t1) dim) (every? number? t1))
+        missing (when-not keys-pred (remove (set (keys fdata)) (set required)))
+        result {:dimension dim
+                :data fdata
+                :valid-data keys-pred
+                :valid-t0 t0-pred
+                :valid-t1 t1-pred}]
+    (cond-> result
+      missing       (assoc-in [:error :missing] missing)
+      (not fdata)   (assoc-in [:error :invalid-0-arity] fdata)
+      (not t0-pred) (assoc-in [:error :invalid-t0] t0)
+      (not t1-pred) (assoc-in [:error :invalid-t1] t1))))
+
+(defn valid-parametric?
+  [f]
+  :not-implemented #_(nil? (:error (check-parametric f))))
+
+#+end_src
+
+*** curve-checking-helpers
+#+begin_src clojure :tangle ./src/forge/brep/surfaces.cljc
+(defn coincident?
+  [a b]
+  (let [eps 0.00001
+        diffs (map #(utils/abs (- %1 %2)) a b)]
+    (when (= (count a) (count b))
+      (= #{true} (set (map #(< % eps) diffs))))))
+
+(defn- closed?
+  [curve]
+  (coincident? (curve 0) (curve 1)))
+
+(defn- coincidence-table
+  [pts]
+  (let [pt-index (zipmap (range (count pts)) pts)
+        fh (fn [pta ptb]
+             (let [result (coincident? pta ptb)]
+               (list (vector [pta ptb] result)
+                     (vector [ptb pta] result))))
+        f (fn [idx pt]
+            (let [ipts (vals (dissoc pt-index idx))]
+              (into {} (mapcat #(fh pt %) ipts))))]
+    (apply merge (map-indexed f pts))))
+
+(defn- flip-second-curve?
+  [a0 b0 b1]
+  (and
+   ;; don't flip closed curves as it might break user design intent
+   (not (coincident? b0 b1))
+   (< (utils/distance a0 b1) (utils/distance a0 b0))))
+
+(defn- curve3D?
+  [curve]
+  (= 3 (count (curve 0))))
+
+(defn reverse-curve
+  [curve]
+  (fn [t]
+    (curve (- 1 t))))
+
+#+end_src
+
+*** 2curve-surfaces
+#+begin_src clojure :tangle ./src/forge/brep/surfaces.cljc
+(defn- surface-along*
+  [curve-a curve-b]
+  (fn [u v]
+    (utils/v+ (curve-a u) (curve-b v))))
+
+(defn- surface-between*
+  [curve-a curve-b]
+  (fn [u v]
+    (let [l (c/line (curve-a u) (curve-b u))]
+      (l v))))
+
+(defn surface
+  [curve-a curve-b]
+  (let [curve-a (c/to-3D curve-a)
+        curve-b (c/to-3D curve-b)
+        [a0 a1] (map curve-a [0 1])
+        [b0 b1] (map curve-b [0 1])
+        flip (flip-second-curve? a0 b0 b1)
+        curve-b (if flip (reverse-curve curve-b) curve-b)
+        [b0 b1] (if flip [b1 b0] [b0 b1])
+        ctable (coincidence-table [a0 a1 b0 b1])
+        surf (cond
+               ;; all vals false, no coincident points
+               (not (seq (filter true? (vals ctable))))
+               (surface-between* curve-a curve-b)
+               
+               ;; curves may be closed, but don't share start/end pts
+               (and (not (ctable [a0 b0])) (not (ctable [a1 b1])))
+               (surface-between* curve-a curve-b)
+               
+               ;; start and end points for each curve are coincident
+               (and (ctable [a0 b0]) (ctable [a1 b1]))
+               (surface-between* curve-a curve-b)
+               
+               ;; only start pts coincide
+               (ctable [a0 b0])
+               (surface-along* curve-a curve-b)
+               
+               ;; only end pts coincide
+               (ctable [a1 b1])
+               (surface-along* curve-a curve-b))]
+    (fn
+      ([] {:fn `surface
+           :input [curve-a curve-b]
+           :origin (surf 0.5 0.5)})
+      ([u v] (surf u v)))))
+
+#+end_src
+
+*** bezier-patch
+#+begin_src clojure :tangle ./src/forge/brep/surfaces.cljc
+(defn- bezier-patch*
+  ([apts bpts cpts] (bezier-patch* apts bpts cpts nil))
+  ([apts bpts cpts dpts]
+   (let [cpt-sets (remove nil? [apts bpts cpts dpts])
+         curves (map c/bezier cpts)]
+       (fn [u v]
+         (let [curve (c/bezier (map #(% u) curves))]
+           (curve v))))))
+
+(defn bezier-patch
+  ([apts bpts cpts] (bezier-patch apts bpts cpts nil))
+  ([apts bpts cpts dpts]
+   (let [cpt-sets (remove nil? [apts bpts cpts dpts])
+         curves (map c/bezier cpts)
+         surf (bezier-patch* apts bpts cpts dpts)
+         origin (surf 0.5 0.5)]
+     (fn
+       ([] {:fn `bezier-patch
+            :input [apts bpts cpts dpts]
+            :origin origin})
+       ([u v] (surf u v))))))
+
+#+end_src
+
+*** curve-extrusion-surfaces
+#+begin_src clojure :tangle ./src/forge/brep/surfaces.cljc
+(defn extrude-curve
+  ([curve h] (extrude-curve curve [0 0 1] h))
+  ([curve direction d]
+   (let [curve (c/to-3D curve)
+         v (utils/v* (utils/normalize direction) (repeat 3 d))]
+     (fn
+       ([] {:fn `extrude-curve
+            :input [curve direction d]
+            :origin (:origin (curve))})
+       ([u v]
+        (utils/v+ (curve u) (utils/v* v (repeat 3 (* d v)))))))))
+
+#+end_src
+
+*** planar-surfaces
+#+begin_src clojure :tangle ./src/forge/brep/surfaces.cljc
+(defn rect
+  [w h]
+  (let [[wh hh] (map #(/ % 2.0) [w h])
+        uline (c/line [(- wh) (- hh)] [(+ wh) (- hh)])
+        vline (c/line [(- wh) (- hh)] [(- wh) (+ hh)])]
+    (fn
+      ([] {:fn `rect
+           :input [w h]
+           :origin [(uline 0.5) (vline 0.5) 0]})
+      ([u v]
+       [(first (uline u))
+        (second (vline v))
+        0]))))
+
+(defn circle
+  [r]
+  (let [perim (c/circle r)]
+    (fn
+      ([] {:fn `circle
+           :input [r]
+           :origin [0 0 0]})
+      ([u v]
+       (let [rad (c/line [0 0] (perim u))]
+         (rad v))))))
+
+(defn triangle
+  [a b c]
+  (let [ctr (utils/centroid-of-pts a b c)
+        perim (c/polygon [a b c])]
+    (fn
+      ([] {:fn `triangle
+           :input [a b c]
+           :origin ctr})
+      ([u v]
+       (let [rad (c/line ctr (perim u))]
+         (rad v))))))
+
+#+end_src
+
+*** translate
+#+begin_src clojure :tangle ./src/forge/brep/surfaces.cljc
+(defn translate
+  [f [x y z]]
+  (let [data (f)]
+    (fn
+      ([] (merge data
+                 {:fn `translate
+                  :origin (utils/v+ (:origin data) [x y z])
+                  :dimension 3
+                  :input [f [x y z]]}))
+      ([u v]
+       (utils/v+ (utils/add-z (f u v)) [x y z])))))
+
+#+end_src
+
+*** rotate
+#+begin_src clojure :tangle ./src/forge/brep/surfaces.cljc
+(defn rotate
+  [f [ax ay az]]
+  (let [data (f)
+        ctr (:origin data)
+        dim (if (and (= 0 ax) (= 0 ay)) (:dimension data) 3)]
+    (fn
+      ([] (merge data
+                 {:fn `rotate
+                  :input [f [ax ay az]]
+                  :dimension dim}))
+      ([u v]
+       (-> (f u v)
+           (utils/v+ (map - ctr))
+           (utils/rotate-pt [ax ay az])
+           (utils/v+ ctr))))))
+
+#+end_src
+
+*** look-at
+#+begin_src clojure :tangle ./src/forge/brep/surfaces.cljc
+;; https://stackoverflow.com/a/52551983
+(defn- look-at-quaternion
+  [from to world-up]
+  (let [world-up (utils/normalize world-up)
+        [fx fy fz :as forward] (utils/normalize (utils/v- from to))
+        [rx ry rz :as right] (utils/normalize (utils/cross* world-up forward))
+        [ux uy uz :as up] (utils/cross* forward right)
+        trace (+ rx uy fz)]
+    (cond
+      (> trace 0)
+      (let [s (/ 0.5 (Math/sqrt (+ trace 1.0)))
+            x (* (- uz fy) s)
+            y (* (- fx rz) s)
+            z (* (- ry ux) s)
+            w (/ 0.25 s)]
+        [x y z w])
+
+      (and (> rx uy) (> rx fz))
+      (let [s (* 2 (Math/sqrt (+ 1 rx (- uy) (- fz))))
+            x (* 0.25 s)
+            y (/ (+ ux ry) s)
+            z (/ (+ fx rz) s)
+            w (/ (- uz fy) s)]
+        [x y z w])
+
+      (> uy fz)
+      (let [s (* 2 (Math/sqrt (+ 1 uy (- rx) (- fz))))
+            x (/ (+ ux ry) s)
+            y (* 0.25 s)
+            z (/ (+ fy uz) s)
+            w (/ (- fx rz) s)]
+        [x y z w])
+
+      :else
+      (let [s (* 2 (Math/sqrt (+ 1 fz (- rx) (- uy))))
+            x (/ (+ fx rz) s)
+            y (/ (+ fy uz) s)
+            z (* 0.25 s)
+            w (/ (- ry ux) s)]
+        [x y z w]))))
+
+(defn transform-pt-quaternion
+  [[px py pz] [x y z w]]
+  [(+ (* w w px) (* 2 y w pz) (* -2 z w py) (* x x px)
+      (* 2 y x py) (* 2 z x pz) (* -1 z z px) (* -1 y y px))
+
+   (+ (* 2 x y px) (* y y py) (* 2 z y pz) (* 2 w z px)
+      (* -1 z z py) (* w w py) (* -2 x w pz) (* -1 x x py))
+
+   (+ (* 2 x z px) (* 2 y z py) (* z z pz) (* -2 w y px)
+      (* -1 y y pz) (* 2 w x py) (* x x pz) (* w w pz))])
+
+
+(defn look-at
+  [f [px py pz] [ux uy uz]]
+  (let [data (f)
+        ctr (utils/add-z (:origin data))
+        dim 3]
+    (fn
+      ([] (merge data
+                 {:fn `look-at
+                  :input [f [px py pz] [ux uy uz]]
+                  :dimension dim}))
+      ([u v]
+       (-> (f u v)
+           utils/add-z
+           (transform-pt-quaternion (look-at-quaternion ctr [px py pz] [ux uy uz])))))))
+
+#+end_src
+
+*** extrude-along
+#+begin_src clojure :tangle ./src/forge/brep/surfaces.cljc
+(defn axis-angle
+  [va vb]
+  (let [angle (-> (utils/dot* (utils/normalize va) (utils/normalize vb))
+                  Math/acos
+                  utils/to-deg)
+        axis (utils/normalize (utils/cross* va vb))]
+    [axis angle]))
+
+(defn axis-angle->euler
+  [axis angle]
+  (let [eps 0.00001
+        angle (utils/to-rad angle)
+        ah (/ angle 2.0)
+        [x y z] (utils/normalize axis)]
+    (cond
+      (and (pos? z) (< (utils/abs (- 1 z)) eps)) ;; points up
+      (mapv utils/to-deg
+            [0
+             (/ Math/PI 2)
+             (* 2 (Math/atan2 (* x (Math/sin ah)) (Math/cos ah)))])
+      
+      (and (neg? z) (< (utils/abs (- 1 z)) eps)) ;; points down
+      (mapv utils/to-deg
+            [0
+             (/ Math/PI -2)
+             (* -2 (Math/atan2 (* x (Math/sin ah)) (Math/cos ah)))])
+      
+      :else
+      (mapv utils/to-deg
+            [(Math/atan2
+              (- (* x (Math/sin angle)) (* y z (- 1 (Math/cos angle))))
+              (- 1 (* (+ (* x x) (* z z)) (- 1 (Math/cos angle)))))
+             (Math/asin (+ (* x y (- 1 (Math/cos angle))) (* z (Math/sin angle))))
+             (Math/atan2
+              (- (* y (Math/sin angle)) (* x z (- 1 (Math/cos angle))))
+              (- 1 (* (+ (* y y) (* z z)) (- 1 (Math/cos angle)))))]))))
+
+(defn axis-angle->quaternion
+  [axis angle]
+  (let [[ax ay az] (utils/normalize axis)
+        ha (/ (utils/to-rad angle) 2.0)
+        qx (* ax (Math/sin ha))
+        qy (* ay (Math/sin ha))
+        qz (* az (Math/sin ha))
+        qw (Math/cos ha)]
+    (utils/normalize [qx qy qz qw])))
+
+;; heading = Z
+;; attitude = Y
+;; bank = X
+;; my own convention, probably should change and/or document it better
+;; ZYX is application order, but vector returns [ax ay az] which is fed into (rotate ...)
+
+(defn quaternion->euler
+  [[qx qy qz qw]]
+  (let [eps 0.00001
+        pole (+ (* qx qy) (* qz qw))]
+    (cond
+      (< (utils/abs (- pole 0.5)) eps) ;; pole close to 0.5 is N
+      (mapv utils/to-deg
+            [0
+             (/ Math/PI 2)
+             (* 2 (Math/atan2 qx qw))])
+
+      (< (utils/abs (+ pole 0.5)) eps) ;; pole close to -0.5 is S
+      (mapv utils/to-deg
+            [0
+             (/ Math/PI -2)
+             (* -2 (Math/atan2 qx qw))])
+
+      :else
+      (mapv utils/to-deg
+            [(Math/atan2 (- (* 2 qx qw) (* 2 qy qz)) (- 1 (* 2 qx qx) (* 2 qz qz)))
+             (Math/asin (+ (* 2 qx qy) (* 2 qz qw)))
+             (Math/atan2 (- (* 2 qy qw) (* 2 qx qz)) (- 1 (* 2 qy qy) (* 2 qz qz)))]))))
+
+(defn euler
+  [va vb]
+  (->> (axis-angle va vb)
+       (apply axis-angle->quaternion)
+       quaternion->euler))
+
+;; http://www.euclideanspace.com/maths/geometry/rotations/conversions/quaternionToAngle/index.htm
+(defn quaternion->axis-angle
+  [q]
+  (let [eps 0.00001
+        [qx qy qz qw] (utils/normalize q)
+        angle (utils/to-deg (* 2 (Math/acos qw)))
+        s (Math/sqrt (- 1 (* qw qw)))]
+    (if (< s eps)
+      #_[[qx qy qz] angle] [[1 0 0] angle]
+      [[(/ qx s) (/ qy s) (/ qz s)] angle])))
+
+(defn rotate-pt-aa
+  [pt axis angle]
+  (let [angle (utils/to-rad angle)
+        axis (utils/normalize axis)
+        d (utils/v* (repeat 3 (utils/dot* axis pt)) axis)
+        r (utils/v- pt d)
+        rp (utils/v+ (utils/v* r (repeat 3 (Math/cos angle)))
+                     (utils/v* (utils/cross* axis r) (repeat 3 (Math/sin angle))))]
+    (utils/v+ d rp)))
+
+(defn extrude-along
+  ([xs path] (extrude-along xs path [0 0 1]))
+  ([xs path up]
+   (let [xs (c/to-3D xs)
+         path (c/to-3D path)
+         data (path)
+         origin (:origin data)]
+     (fn
+       ([] {:fn `extrude-along
+            :input [xs path up]
+            :origin origin})
+       ([u v]
+        (let [pt (utils/add-z (xs v))
+              path-pt (utils/add-z (path u))
+              path-tangent (c/tangent path u)
+              path-normal (c/normal path u up)
+              xs-normal [0 0 1]
+              q (look-at xs-normal path-tangent path-normal)
+              xpt (-> pt
+                      (transform-pt-quaternion q)
+                      (utils/v+ path-pt))]
+          xpt))))))
+
+#+end_src
+
+*** scale
+#+begin_src clojure :tangle ./src/forge/brep/surfaces.cljc
+(defn scale
+  [f [sx sy sz]]
+  (let [data (f)
+        ctr (:origin data)]
+    (fn
+      ([] (merge data
+                 {:fn `scale
+                  :input [f [sx sy sz]]}))
+      ([u v]
+       (utils/scale-pt-from-center (f u v) [sx sy sz] ctr)))))
+
+#+end_src
+
+*** offset-surface
+#+begin_src clojure :tangle ./src/forge/brep/surfaces.cljc
+(defn normal
+  [surface [u v]]
+  (let [eps 0.00001
+        uvs (->> (utils/regular-polygon-pts eps 3)
+                 (map #(utils/v+ % [u v])))
+        pts (map #(apply surface %) uvs)]
+    (utils/normalize (apply utils/normal pts))))
+
+(defn offset
+  [surf t]
+  (let []
+    (fn
+      ([] {:fn `offset
+           :input [surf t]
+           :origin (surf 0.5 0.5)})
+      ([u v]
+       (let [pt (surf u v)
+             n (normal surf [u v])
+             v (utils/v* n (repeat t))]
+         (utils/v+ pt v))))))
+
+#+end_src
+
+** brep.mesh
+*** ns
+#+begin_src clojure :tangle ./src/forge/brep/mesh.cljc
+(ns forge.brep.mesh
+  (:require [clojure.string :as str]
+            [forge.utils :as utils]
+            [forge.geom :as geom]
+            [forge.delaunay :as delaunay]
+            [forge.clip-ears :as clip-ears]
+            [forge.brep.curves :as c]
+            [forge.brep.surfaces :as s]))
+
+#+end_src
+
+*** rect-grid
+#+begin_src clojure :tangle ./src/forge/brep/mesh.cljc
+(defn rect-grid
+  [nx ny x-spacing y-spacing]
+  (for [a (range nx)
+        b (range ny)]
+    [(* b y-spacing) (* a x-spacing)]))
+
+#+end_src
+
+*** tri-indices
+#+begin_src clojure :tangle ./src/forge/brep/mesh.cljc
+(defn- tri-indices
+  [seg idx]
+  (if (and (not= 0 idx) (= 0 (int (mod (inc idx) seg))))
+    ;; when idx is a multiple of seg, loop the surface back to u 0
+    [[idx (+ idx seg) (+ 1 idx (- seg))]
+     [(+ 1 idx (- seg)) (+ idx seg) (+ 1 idx)]]
+    ;; otherwise, use simple idx shifting, assuming the u 1 edge pts are NOT present in the pts list
+    [[idx (+ idx seg) (+ 1 idx)]
+     [(+ 1 idx) (+ idx seg) (+ 1 idx seg) ]]))
+
+#+end_src
+
+*** curve
+#+begin_src clojure :tangle ./src/forge/brep/mesh.cljc
+(defn curve
+  [curve seg]
+  (let [eps 0.00001
+        step (double (/ 1 seg))
+        ts (range 0 1 step)]
+    {:pts (map curve ts)}))
+
+#+end_src
+
+*** surface
+#+begin_src clojure :tangle ./src/forge/brep/mesh.cljc
+(defn surface
+  [surf seg]
+  (let [eps 0.00001
+        useg seg
+        vseg useg
+        ustep (double (/ 1 useg))
+        vstep (double (/ 1 vseg))
+        uvs (rect-grid (inc useg) (inc vseg) ustep vstep)
+        trifn (fn [idx]
+                (when-not
+                    (and (not= 0 idx)
+                         (= 0 (int (mod (inc idx) (inc seg)))))
+                  [[idx (+ idx (inc useg)) (inc idx)]
+                   [(inc idx) (+ 1 idx useg) (+ 2 idx useg)]]))
+        tris (->> (range (inc (count uvs)))
+                  (drop-last seg)
+                  (mapcat trifn)
+                  (remove nil?)
+                  (drop-last 2))]
+    {:pts (map #(apply surf %) uvs)
+     :faces tris}))
 
 #+end_src
 
@@ -2422,8 +3229,8 @@ The namespace declaration.
 (ns forge.model
   (:require [forge.utils :as utils]
             [forge.geom :as geom]
-            [forge.brep :as brep]
-            [forge.frep :as frep]))
+            #_[forge.brep :as brep]
+            #_[forge.frep :as frep]))
 
 #+end_src
 
@@ -3265,8 +4072,6 @@ Which you can toggle with:
 
 ~M-x cider-repl-toggle-content-types~
 
-**** TODO: fix openscad alias issue with sh call
-
 #+begin_src clojure :tangle ./src/forge/compile/scad.cljc
 (defn png!
   [fname mdl-data]
@@ -3274,7 +4079,8 @@ Which you can toggle with:
     (sh "/usr/local/bin/openscad" "/dev/stdin"
         "--imgsize" "400,400"
         "--projection" "orthogonal"
-        #_"--colorscheme" #_"greenscreen" #_"Nord"
+        "--view" "edges"
+        "--colorscheme" "Tomorrow Night" #_"greenscreen" #_"Nord"
         #_"--camera" #_"0,0,0,55,0,25,2900"
         "-o" fname
         :in scad)))
@@ -3892,11 +4698,258 @@ Every elem-to-svg needs the element and a transform function (xf) which takes a 
 * scratch
 A namespace for playing around with fns
 
+** path-extrusion-surfaces
+#+begin_src clojure
+(load-file "src/forge/brep/curves.cljc")
+(load-file "src/forge/brep/surfaces.cljc")
+
+(ns forge.scratch
+  (:require [forge.utils :as utils]
+            [forge.model :as mdl]
+            [forge.brep.curves :as bc]
+            [forge.brep.surfaces :as bs]
+            [forge.brep.mesh :as bmesh]
+            [forge.compile.scad :as scad :refer [cider-show]]))
+
+(defn surface-mesh
+  [surf seg]
+  (let [{:keys [pts faces]} (bmesh/surface surf seg)]
+    (mdl/polyhedron pts faces)))
+
+(defn lcs
+  [path t]
+  (let [wo [0.00001 0.00001 0.00001]
+        path (bc/to-3D path)
+        m 40
+        o (path t)
+        f (bc/tangent path t)
+        r (bc/normal path t [0 0 1])
+        u (utils/cross* f r)
+        [f r u] (map utils/normalize [f r u])]
+    (mdl/group
+     (-> (mdl/sphere 5) (mdl/translate o))
+     (mdl/color (-> (mdl/line wo (map #(* m %) f)) (mdl/translate o)) [255 0 0 1])
+     (mdl/color (-> (mdl/line wo (map #(* m %) r)) (mdl/translate o)) [0 255 0 1])
+     (mdl/color (-> (mdl/line wo (map #(* m %) u)) (mdl/translate o)) [0 0 255 1]))))
+
+(def a
+  (let [shape (mdl/box 200 75 50)
+        pt [300 300 300]
+        [axis angle] (bs/quaternion->axis-angle (bs/look-at [1 0 0] pt [0 0 1]))
+        path (-> (bc/circle 200)
+                 #_(bc/rotate [45 0 0])) #_(bc/line [0 0 0] [0 0 1])
+        xs (bc/polygon [[-20 -10] [ 20 -10]
+                        [ 20  10] [-20  10]])]
+    (mdl/group
+     (-> (mdl/sphere 10) (mdl/translate pt))
+     (-> shape
+         (mdl/rotate angle axis))
+     (map #(lcs path %) (range 0 1 0.05))
+     (surface-mesh (bs/extrude-along xs path) 20))))
+
+(def b (mdl/box 200 300 100))
+
+(spit "forge.scad" (scad/write b))
+
+#+end_src
+
+** attractor
+#+begin_src clojure
+(load-file "src/forge/brep/curves.cljc")
+(load-file "src/forge/brep/surfaces.cljc")
+
+(ns forge.scratch
+  (:require [forge.utils :as utils]
+            [forge.model :as mdl]
+            [forge.brep.curves :as bc]
+            [forge.brep.surfaces :as bs]
+            [forge.brep.mesh :as bmesh]
+            [forge.compile.scad :as scad :refer [cider-show]]
+            [svg-clj.elements :as el]
+            [svg-clj.transforms :as tf]
+            [svg-clj.parametric :as p]
+            [svg-clj.tools :as tools]))
+
+(def iso-euler-angles [35.264 45 0])
+(def origin-angle-adjust-a [90 0 0])
+(def origin-angle-adjust-b [0 -90 0])
+
+(defn- sin-cos-pair [theta]
+  [(Math/sin ^double (utils/to-rad theta))
+   (Math/cos ^double (utils/to-rad theta))])
+
+(defn- rot-pt-2d
+  [[x y] theta]
+  (let [[s-t c-t] (sin-cos-pair theta)]
+    [(- (* x c-t) (* y s-t))
+     (+ (* y c-t) (* x s-t))]))
+
+;; this rotates a point around [0,0,0]
+(defn- rot-pt
+  [[x y z] axis theta]
+  (cond
+    (= axis :x) (into [x] (rot-pt-2d [y z] theta))
+    (= axis :y) (apply #(into [] [%2 y %1]) (rot-pt-2d [z x] theta))
+    (= axis :z) (into (rot-pt-2d [x y] theta) [z])))
+
+(defn- rotate-point
+  [pt [ax ay az]]
+  (let [pt (if (< (count pt) 3)
+             (conj pt 0)
+             pt)]
+    (-> pt
+        (rot-pt :z az)
+        (rot-pt :y ay)
+        (rot-pt :x ax))))
+
+(defn- rotate-points
+  [pts [ax ay az]]
+  (mapv #(rotate-point % [ax ay az]) pts))
+
+(defn isometric-xf
+  [pts]
+  (-> pts
+      (rotate-points origin-angle-adjust-a)
+      (rotate-points origin-angle-adjust-b)
+      (rotate-points iso-euler-angles)))
+
+(defn svg-surface
+  [surface seg]
+  (let [{:keys [pts faces]} (bmesh/surface surface seg)
+        pts (vec (isometric-xf pts))
+        f (fn [face]
+            (let [pts (map #(get pts %) face)]
+              (when (= 3 (count (remove nil? pts)))
+                (-> (map drop-last pts)
+                    el/polygon
+                    (tf/style {:fill "none"
+                               :stroke "white"})))))]
+    (el/g (remove nil? (map f faces)))))
+
+(defn svg-curve
+  [curve seg]
+  (let [pts (->> (bmesh/curve curve seg)
+                 :pts
+                 isometric-xf
+                 (map drop-last)
+                 vec)]
+    (-> (svg-clj.path/polygon pts)
+        (tf/style {:fill "none"
+                   :stroke "slategray"}))))
+
+(defn lorenz
+  [[sigma rho beta] [x y z]]
+  (let [f (fn [[[x y z]
+                [dx dy dz dt]]]
+            (let [dx (* (* sigma (- y x)) dt)
+                  dy (* (- (* x (- rho z)) y) dt)
+                  dz (* (- (* x y) (* beta z)) dt)]
+              [[(+ x dx) (+ y dy) (+ z dz)]
+               [dx dy dz dt]]))]
+    (fn [dt steps]
+      (map first (take steps (iterate f [[x y z] [0 0 0 dt]]))))))
+
+(let [c
+      (lorenz [10 28 (/ 8 3.0)] [0.1 0.1 0.1])
+      #_(lorenz [(/ 5 7) (/ 7 9) (/ 5 23)] [2 2 2])
+      n 10000
+      pts (c 0.01 n)]
+  (-> (bc/polyline pts)
+      (bc/rotate [70 45 70])
+      (bc/rotate [70 45 75])
+      (bc/scale [5 5 5])
+      (svg-curve n)
+      tools/cider-show))
+
+(def a
+  (let [p (-> (bc/circle 162)
+              bc/to-3D
+              (bc/rotate [0 0 190]))
+        g 275
+        step 0.00375
+        xs (fn [amp freq t]
+             (bc/circle (+ 20 (* ((p/sinwave amp freq) t) 10))))
+        f (fn [amp freq t]
+            (let [from (utils/add-z (p t))
+                  to (utils/add-z (bc/tangent p t))]
+              (-> (xs amp freq t)
+                  (bc/look-at (utils/v+ from to) [0 1 0])
+                  (bc/translate from)
+                  (bc/rotate [0 0 90])
+                  (svg-curve 20))))]
+    (el/g
+     (-> (el/g (map #(f 2 2 %) (range 0 1 step)))
+         (tf/translate [0 0]))
+     (-> (el/g (map #(f 1.8 4 %) (range 0 1 step)))
+         (tf/translate [0 g]))
+     (-> (el/g (map #(f 1.6 6 %) (range 0 1 step)))
+         (tf/translate [0 (* 2 g)]))
+     (-> (el/g (map #(f 1.4 8 %) (range 0 1 step)))
+         (tf/translate [0 (* 3 g)]))
+     (-> (el/g (map #(f 1.2 10 %) (range 0 1 step)))
+         (tf/translate [0 (* 4 g)])))))
+
+(def b
+  (let [p1 (-> (bc/circle 150)
+               bc/to-3D
+               (bc/translate [0 -150 0])
+               (bc/rotate [0 0 180]))
+        p2 (-> (bc/circle 150)
+               bc/to-3D
+               #_(bc/translate [0 150 0])
+               (bc/rotate [0 90 0]))
+        g 275
+        step 0.00375
+        xs (fn [amp freq t]
+             (bc/circle (+ 20 (* ((p/sinwave amp freq) t) 10))))
+        f (fn [amp freq p t]
+            (let [from (utils/add-z (p t))
+                  to (utils/add-z (bc/tangent p t))]
+              (-> (xs amp freq t)
+                  (bc/look-at (utils/v+ from to) [0 1 0])
+                  (bc/translate from)
+                  (bc/rotate [0 0 90])
+                  (svg-curve 20))))]
+    (el/g
+     #_(svg-curve p1 120)
+     #_(svg-curve p2 120)
+     (-> (el/g (map #(f 2 2 p1 %) (range 0 1 step)))
+         (tf/translate [0 0]))
+     (-> (el/g (map #(f 2 2 p2 %) (range 0 1 step)))
+         (tf/translate [0 0])))))
+
+(def c
+  (let [p1 (-> (bc/circle 150)
+               bc/to-3D
+               (bc/rotate [0 0 215]))
+        g 275
+        step 0.01
+        xs (fn [amp freq t]
+             (bc/circle (+ 20 (* ((p/sinwave amp freq) t) 10))))
+        f (fn [amp freq p t]
+            (let [from (utils/add-z (p t))
+                  to (utils/add-z (bc/tangent p t))]
+              (-> (xs amp freq t)
+                  (bc/look-at (utils/v+ from to) [0 1 0])
+                  (bc/translate from)
+                  (bc/rotate [0 0 90])
+                  (bmesh/curve 20)
+                  :pts
+                  isometric-xf)))]
+    #_(->> (mapcat #(f 0.7 20 p1 %) (range 0 1 step))
+         (map #(clojure.string/join \tab %))
+         (clojure.string/join \newline))
+    (el/g (map #(-> (el/circle 1) (tf/translate (drop-last %))) (mapcat #(f 0.7 20 p1 %) (range 0 1 step))))))
+ 
+#+end_src
+
+** importing-svg
 #+begin_src clojure
 (ns forge.scratch
   (:require [forge.model :as mdl]
             [forge.utils :as utils]
-            [forge.brep :as brep]
+            [forge.brep.curves :as bc]
+            [forge.brep.surfaces :as bs]
             [forge.import.image :as img]
             [forge.compile.scad :as scad]))
 
@@ -3912,7 +4965,7 @@ A namespace for playing around with fns
 (def d (-> (img/import "sk.svg")))
 
 (def e (-> (for [t (range 0 1.1 0.1)]
-             ((brep/bezier [[0 0 0] [400 400 400] [700 50 200] [300 -200 100] [30 -500 -100]]) t))
+             ((bc/bezier [[0 0 0] [400 400 400] [700 50 200] [300 -200 100] [30 -500 -100]]) t))
            (mdl/polyline)))
 
 (def aa

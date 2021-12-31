@@ -1,8 +1,8 @@
 (ns forge.model
   (:require [forge.utils :as utils]
             [forge.geom :as geom]
-            [forge.brep :as brep]
-            [forge.frep :as frep]))
+            #_[forge.brep :as brep]
+            #_[forge.frep :as frep]))
 
 (def pi Math/PI)
 (def tau (* 2 pi))
