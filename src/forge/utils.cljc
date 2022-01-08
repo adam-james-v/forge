@@ -200,8 +200,8 @@
    (let [eps 0.00001
          ab (v- a b)
          ac (v- a c)
-         [x y z] (cross* ab ac)]
-     (when (and (> x eps) (> y eps) (> z eps))
+         [x y z] (cross* (add-z ab) (add-z ac))]
+     (when (or (> x eps) (> y eps) (> z eps))
        [x y z]))))
 
 (defn normalize

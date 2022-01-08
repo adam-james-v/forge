@@ -19,3 +19,4 @@ pom.xml.asc
 *.scad
 *.svg
 *.png
+*.obj

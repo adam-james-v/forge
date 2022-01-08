@@ -9,9 +9,9 @@
 
 (defn rect-grid
   [nx ny x-spacing y-spacing]
-  (for [a (range nx)
-        b (range ny)]
-    [(* b y-spacing) (* a x-spacing)]))
+  (for [b (range ny)
+        a (range nx)]
+    [(* a x-spacing) (* b y-spacing)]))
 
 (defn- tri-indices
   [seg idx]
@@ -31,23 +31,30 @@
     {:pts (map curve ts)}))
 
 (defn surface
-  [surf seg]
-  (let [eps 0.00001
-        useg seg
-        vseg useg
-        ustep (double (/ 1 useg))
-        vstep (double (/ 1 vseg))
-        uvs (rect-grid (inc useg) (inc vseg) ustep vstep)
-        trifn (fn [idx]
-                (when-not
-                    (and (not= 0 idx)
-                         (= 0 (int (mod (inc idx) (inc seg)))))
-                  [[idx (+ idx (inc useg)) (inc idx)]
-                   [(inc idx) (+ 1 idx useg) (+ 2 idx useg)]]))
-        tris (->> (range (inc (count uvs)))
-                  (drop-last seg)
-                  (mapcat trifn)
-                  (remove nil?)
-                  (drop-last 2))]
-    {:pts (map #(apply surf %) uvs)
-     :faces tris}))
+  ([surf seg] (surface seg seg))
+  ([surf useg vseg]
+   (let [eps 0.00001
+         ustep (double (/ 1 useg))
+         vstep (double (/ 1 vseg))
+         uvs (rect-grid (inc useg) (inc vseg) ustep vstep)
+         trifn (fn [idx]
+                 (when-not
+                     (and (not= 0 idx)
+                          (= 0 (int (mod (inc idx) (inc useg)))))
+                   (let [a idx
+                         b (inc idx)
+                         d (- (+ idx 1 useg) 0 #_(- useg vseg))
+                         c (inc d)]
+                     [[a b c] [a c d]]
+                     #_[[idx (+ idx (inc useg)) (inc idx)]
+                    [(inc idx) (+ 1 idx useg) (+ 2 idx useg)]])))
+         quadfn (fn [[a b c] [_ _ d]] [a b c d])
+         tris (->> (range (inc (count uvs)))
+                   (take (inc (* (inc useg) vseg)))
+                   (mapcat trifn)
+                   (remove nil?)
+                   (drop-last 2))
+         quads (map #(apply quadfn %) (partition 2 tris))]
+     {:pts (map #(apply surf %) uvs)
+      :tris tris
+      :quads quads})))

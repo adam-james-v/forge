@@ -92,11 +92,10 @@
        (utils/v+ a (utils/v* (utils/v- b a) (repeat t)))))))
 
 (defn fastline
-  [[ax ay :as a] [bx by :as b]]
+  [a b]
   (let [[vx vy] (utils/v- b a)]
     (fn [t]
-      [(+ ax (* vx t))
-       (+ ay (* vy t))])))
+      (utils/v+ a (utils/v* (utils/v- b a) (repeat t))))))
 
 (defn polyline
   [pts]
@@ -169,7 +168,7 @@
         [x y]))))
 
   ([a b c]
-   (let [[a b c] (map #(conj % 0) [a b c])
+   (let [[a b c] (map utils/add-z [a b c])
          n (utils/normalize (utils/normal a b c))
          r (utils/radius-from-pts a b c)
          cp (utils/arc-center-from-pts a b c)
@@ -199,7 +198,7 @@
 
 (defn arc
   [a b c]
-  (let [[a b c] (map #(conj % 0) [a b c])
+  (let [[a b c] (map utils/add-z [a b c])
         f (circle a b c)
         cp (utils/arc-center-from-pts a b c)
         angle (utils/angle-from-pts a cp c)

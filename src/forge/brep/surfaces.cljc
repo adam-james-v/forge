@@ -73,12 +73,12 @@
   (fn [t]
     (curve (- 1 t))))
 
-(defn- surface-along*
+(defn surface-along*
   [curve-a curve-b]
   (fn [u v]
     (utils/v+ (curve-a u) (curve-b v))))
 
-(defn- surface-between*
+(defn surface-between*
   [curve-a curve-b]
   (fn [u v]
     (let [l (c/line (curve-a u) (curve-b u))]
@@ -124,7 +124,7 @@
   ([apts bpts cpts] (bezier-patch* apts bpts cpts nil))
   ([apts bpts cpts dpts]
    (let [cpt-sets (remove nil? [apts bpts cpts dpts])
-         curves (map c/bezier cpts)]
+         curves (map c/bezier cpt-sets)]
        (fn [u v]
          (let [curve (c/bezier (map #(% u) curves))]
            (curve v))))))
@@ -133,7 +133,7 @@
   ([apts bpts cpts] (bezier-patch apts bpts cpts nil))
   ([apts bpts cpts dpts]
    (let [cpt-sets (remove nil? [apts bpts cpts dpts])
-         curves (map c/bezier cpts)
+         curves (map c/bezier cpt-sets)
          surf (bezier-patch* apts bpts cpts dpts)
          origin (surf 0.5 0.5)]
      (fn

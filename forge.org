@@ -597,8 +597,8 @@ and re-implemented with clojure.test library.
    (let [eps 0.00001
          ab (v- a b)
          ac (v- a c)
-         [x y z] (cross* ab ac)]
-     (when (and (> x eps) (> y eps) (> z eps))
+         [x y z] (cross* (add-z ab) (add-z ac))]
+     (when (or (> x eps) (> y eps) (> z eps))
        [x y z]))))
 
 (defn normalize
@@ -1876,11 +1876,10 @@ This check does not determine yet if the implied function from :fn :input will b
        (utils/v+ a (utils/v* (utils/v- b a) (repeat t)))))))
 
 (defn fastline
-  [[ax ay :as a] [bx by :as b]]
+  [a b]
   (let [[vx vy] (utils/v- b a)]
     (fn [t]
-      [(+ ax (* vx t))
-       (+ ay (* vy t))])))
+      (utils/v+ a (utils/v* (utils/v- b a) (repeat t))))))
 
 #+end_src
 
@@ -1965,7 +1964,7 @@ This check does not determine yet if the implied function from :fn :input will b
         [x y]))))
 
   ([a b c]
-   (let [[a b c] (map #(conj % 0) [a b c])
+   (let [[a b c] (map utils/add-z [a b c])
          n (utils/normalize (utils/normal a b c))
          r (utils/radius-from-pts a b c)
          cp (utils/arc-center-from-pts a b c)
@@ -1999,7 +1998,7 @@ This check does not determine yet if the implied function from :fn :input will b
 #+begin_src clojure :tangle ./src/forge/brep/curves.cljc
 (defn arc
   [a b c]
-  (let [[a b c] (map #(conj % 0) [a b c])
+  (let [[a b c] (map utils/add-z [a b c])
         f (circle a b c)
         cp (utils/arc-center-from-pts a b c)
         angle (utils/angle-from-pts a cp c)
@@ -2359,7 +2358,6 @@ I need to update my requirements in my curves map design. I should include an :o
 
 #+end_src
 
-
 ** brep.surfaces
 *** design
 The brep surfaces functions return a function expecting two parameter, denoted as [u v] by convention.
@@ -2467,12 +2465,12 @@ This check does not determine yet if the implied function from :fn :input will b
 
 *** 2curve-surfaces
 #+begin_src clojure :tangle ./src/forge/brep/surfaces.cljc
-(defn- surface-along*
+(defn surface-along*
   [curve-a curve-b]
   (fn [u v]
     (utils/v+ (curve-a u) (curve-b v))))
 
-(defn- surface-between*
+(defn surface-between*
   [curve-a curve-b]
   (fn [u v]
     (let [l (c/line (curve-a u) (curve-b u))]
@@ -2522,7 +2520,7 @@ This check does not determine yet if the implied function from :fn :input will b
   ([apts bpts cpts] (bezier-patch* apts bpts cpts nil))
   ([apts bpts cpts dpts]
    (let [cpt-sets (remove nil? [apts bpts cpts dpts])
-         curves (map c/bezier cpts)]
+         curves (map c/bezier cpt-sets)]
        (fn [u v]
          (let [curve (c/bezier (map #(% u) curves))]
            (curve v))))))
@@ -2531,7 +2529,7 @@ This check does not determine yet if the implied function from :fn :input will b
   ([apts bpts cpts] (bezier-patch apts bpts cpts nil))
   ([apts bpts cpts dpts]
    (let [cpt-sets (remove nil? [apts bpts cpts dpts])
-         curves (map c/bezier cpts)
+         curves (map c/bezier cpt-sets)
          surf (bezier-patch* apts bpts cpts dpts)
          origin (surf 0.5 0.5)]
      (fn
@@ -2895,9 +2893,9 @@ This check does not determine yet if the implied function from :fn :input will b
 #+begin_src clojure :tangle ./src/forge/brep/mesh.cljc
 (defn rect-grid
   [nx ny x-spacing y-spacing]
-  (for [a (range nx)
-        b (range ny)]
-    [(* b y-spacing) (* a x-spacing)]))
+  (for [b (range ny)
+        a (range nx)]
+    [(* a x-spacing) (* b y-spacing)]))
 
 #+end_src
 
@@ -2929,26 +2927,33 @@ This check does not determine yet if the implied function from :fn :input will b
 *** surface
 #+begin_src clojure :tangle ./src/forge/brep/mesh.cljc
 (defn surface
-  [surf seg]
-  (let [eps 0.00001
-        useg seg
-        vseg useg
-        ustep (double (/ 1 useg))
-        vstep (double (/ 1 vseg))
-        uvs (rect-grid (inc useg) (inc vseg) ustep vstep)
-        trifn (fn [idx]
-                (when-not
-                    (and (not= 0 idx)
-                         (= 0 (int (mod (inc idx) (inc seg)))))
-                  [[idx (+ idx (inc useg)) (inc idx)]
-                   [(inc idx) (+ 1 idx useg) (+ 2 idx useg)]]))
-        tris (->> (range (inc (count uvs)))
-                  (drop-last seg)
-                  (mapcat trifn)
-                  (remove nil?)
-                  (drop-last 2))]
-    {:pts (map #(apply surf %) uvs)
-     :faces tris}))
+  ([surf seg] (surface seg seg))
+  ([surf useg vseg]
+   (let [eps 0.00001
+         ustep (double (/ 1 useg))
+         vstep (double (/ 1 vseg))
+         uvs (rect-grid (inc useg) (inc vseg) ustep vstep)
+         trifn (fn [idx]
+                 (when-not
+                     (and (not= 0 idx)
+                          (= 0 (int (mod (inc idx) (inc useg)))))
+                   (let [a idx
+                         b (inc idx)
+                         d (- (+ idx 1 useg) 0 #_(- useg vseg))
+                         c (inc d)]
+                     [[a b c] [a c d]]
+                     #_[[idx (+ idx (inc useg)) (inc idx)]
+                    [(inc idx) (+ 1 idx useg) (+ 2 idx useg)]])))
+         quadfn (fn [[a b c] [_ _ d]] [a b c d])
+         tris (->> (range (inc (count uvs)))
+                   (take (inc (* (inc useg) vseg)))
+                   (mapcat trifn)
+                   (remove nil?)
+                   (drop-last 2))
+         quads (map #(apply quadfn %) (partition 2 tris))]
+     {:pts (map #(apply surf %) uvs)
+      :tris tris
+      :quads quads})))
 
 #+end_src
 
@@ -4709,7 +4714,9 @@ A namespace for playing around with fns
             [forge.brep.curves :as bc]
             [forge.brep.surfaces :as bs]
             [forge.brep.mesh :as bmesh]
-            [forge.compile.scad :as scad :refer [cider-show]]))
+            [forge.compile.scad :as scad :refer [cider-show]]
+            [svg-clj.path :as path]
+            [svg-clj.transforms :as tf]))
 
 (defn surface-mesh
   [surf seg]
@@ -4748,18 +4755,70 @@ A namespace for playing around with fns
      (surface-mesh (bs/extrude-along xs path) 20))))
 
 (def b (mdl/box 200 300 100))
+#+end_src
 
-(spit "forge.scad" (scad/write b))
+
+** importing-svg
+#+begin_src clojure
+(ns forge.scratch
+  (:require [forge.model :as mdl]
+            [forge.utils :as utils]
+            [forge.brep.curves :as bc]
+            [forge.brep.surfaces :as bs]
+            [forge.import.image :as img]
+            [forge.compile.scad :as scad]))
+
+(def a (-> (mdl/circle 20) 
+           (mdl/extrude 100)))
+(def b (-> (mdl/circle 20)
+           (mdl/translate [40 0 0])
+           (mdl/revolve 360)))
+(def c (-> (utils/regular-polygon-pts 30 8)
+           (mdl/polygon)
+           (mdl/translate [180 0 0])
+           (mdl/revolve 180)))
+(def d (-> (img/import "sk.svg")))
+
+(def e (-> (for [t (range 0 1.1 0.1)]
+             ((bc/bezier [[0 0 0] [400 400 400] [700 50 200] [300 -200 100] [30 -500 -100]]) t))
+           (mdl/polyline)))
+
+(def aa
+  (->> (slurp "sk.svg")
+       svg-clj.utils/svg-str->hiccup
+       (drop 2)
+       last
+       (drop 2)
+       last
+       svg-clj.transforms/path->elements))
+
+(svg-clj.tools/cider-show aa)
+(scad/cider-show d)
+
+(defn line-drawing
+  [fname & {:keys [r]}]
+  (-> fname
+      img->str
+      svg-str->hiccup
+      (->> (drop 2))
+      re-center
+      (->> (mapcat path/split-path))
+      (->> (map path->pts))
+      (->> (map #(mdl/polyline %)))
+      mdl/union))
 
 #+end_src
 
-** attractor
+* axiart
+** svg-surface
 #+begin_src clojure
 (load-file "src/forge/brep/curves.cljc")
 (load-file "src/forge/brep/surfaces.cljc")
+(load-file "src/forge/brep/mesh.cljc")
 
 (ns forge.scratch
-  (:require [forge.utils :as utils]
+  (:require [clojure.string :as str]
+            [forge.utils :as utils]
             [forge.model :as mdl]
             [forge.brep.curves :as bc]
             [forge.brep.surfaces :as bs]
@@ -4768,6 +4827,7 @@ A namespace for playing around with fns
             [svg-clj.elements :as el]
             [svg-clj.transforms :as tf]
             [svg-clj.parametric :as p]
+            [svg-clj.layout :as lo]
             [svg-clj.tools :as tools]))
 
 (def iso-euler-angles [35.264 45 0])
@@ -4814,17 +4874,18 @@ A namespace for playing around with fns
       (rotate-points iso-euler-angles)))
 
 (defn svg-surface
-  [surface seg]
-  (let [{:keys [pts faces]} (bmesh/surface surface seg)
-        pts (vec (isometric-xf pts))
-        f (fn [face]
-            (let [pts (map #(get pts %) face)]
-              (when (= 3 (count (remove nil? pts)))
-                (-> (map drop-last pts)
-                    el/polygon
-                    (tf/style {:fill "none"
-                               :stroke "white"})))))]
-    (el/g (remove nil? (map f faces)))))
+  ([surface seg] (svg-surface seg seg))
+  ([surface useg vseg]
+   (let [{:keys [pts quads]} (bmesh/surface surface useg vseg)
+         pts (vec (isometric-xf pts))
+         f (fn [face]
+             (let [pts (map #(get pts %) face)]
+               (when (= 4 (count (remove nil? pts)))
+                 (-> (map drop-last pts)
+                     el/polygon
+                     (tf/style {:fill "none"
+                                :stroke "skyblue"})))))]
+     (el/g (remove nil? (map f quads))))))
 
 (defn svg-curve
   [curve seg]
@@ -4835,8 +4896,172 @@ A namespace for playing around with fns
                  vec)]
     (-> (svg-clj.path/polygon pts)
         (tf/style {:fill "none"
-                   :stroke "slategray"}))))
+                   :stroke "slategray"
+                   :stroke-width 0.5}))))
 
+#+end_src
+
+** 001
+#+begin_src clojure
+(def rcut
+  (let [[l w h] [500 500 500]
+        [lh wh hh] (map #(/ % 2) [l w h])
+        base (mdl/box l w h)
+        dimfn (fn [] (+ (rand-int 55) 20))
+        cutfn (fn [] (-> (mdl/box (dimfn) (dimfn) (dimfn))
+                         (mdl/translate [(- (rand-int l) lh)
+                                         (- (rand-int w) wh)
+                                         (- (rand-int h) hh)])))]
+    (mdl/difference
+     base
+     (apply mdl/union (repeatedly 2000 cutfn)))))
+
+(spit "forge.scad" (scad/write rcut))
+
+#+end_src
+
+** 002
+#+begin_src clojure
+(defn sphere
+  [r]
+  (let [c (-> (bc/circle r)
+              bc/to-3D
+              (bc/rotate [0 90 0]))]
+    (fn [u v]
+      (let [a (* u 360)
+            v (* v 0.5)
+            xc (-> c (bc/rotate [0 0 a]))]
+        (xc v)))))
+
+(defn bezier-loop
+  [pts]
+  (let [ba (apply path/bezier pts)
+        cp1 ((apply bc/line (reverse (take 2 pts))) 2)
+        cp2 ((apply bc/line (take-last 2 pts)) 2)
+        bb (path/bezier (last pts) cp2 cp1 (first pts))
+        [path-start bez-a] (path/path-str->cmds (get-in ba [1 :d]))
+        [_ bez-b] (path/path-str->cmds (get-in bb [1 :d]))
+        close {:command "Z" :coordsys :abs}]
+    (path/path (path/cmds->path-string [path-start bez-a bez-b close]))))
+
+(defn sphere-blobs
+  []
+  (let [bezfn (fn [r bez-uvs]
+                (let [ball (sphere r)
+                      uvs (-> (bezier-loop bez-uvs)
+                              path/decurve
+                              (get-in [1 :d])
+                              path/path-str->cmds
+                              (->> (mapcat path/cmd->pts)))
+                      shape (->> (map #(apply ball %) uvs)
+                                 isometric-xf
+                                 (map drop-last)
+                                 (map vec)
+                                 path/polygon)]
+                  (-> shape 
+                     (tf/style {:stroke "black"
+                                :fill "none"
+                                :stroke-width 2}))))
+        buvs (fn [r pt]
+               (let [c (-> (bc/circle r) bc/to-3D (bc/translate (utils/add-z pt)))
+                     ts (take-nth 6 (sort (repeatedly 21 rand)))]
+                 (map #(drop-last (c %)) ts)))
+        ptfn (fn [n]
+               (let [north ((sphere 100) 0 1)
+                     south ((sphere 100) 0 0)
+                     pts (->> (p/rect-grid 16 16 0.07 0.07)
+                              (map #(apply (sphere 100) %))
+                              (remove #(< (utils/distance north %) 23))
+                              (remove #(< (utils/distance south %) 23)))]
+                 (loop [acc [[0.375 0.5]]
+                        pts (clojure.set/difference (set pts) (set (first acc)))]
+                   (if-not (< (count acc) (* 2 (inc n)))
+                     (take n (shuffle acc))
+                     (let [next-pt (->> pts
+                                        (sort-by
+                                         (fn [pt] (/ (apply + (map #(utils/distance pt %) acc))
+                                                     (count acc))))
+                                        last)
+                           remaining-pts (clojure.set/difference pts (set next-pt))]
+                       (recur (conj acc next-pt) remaining-pts))))))
+        bpts (->> (ptfn 11)
+                  (map #(buvs (+ 0.09 (rand 0.015)) %)))]
+    (el/g
+     (-> (svg-surface (sphere 100) 20)
+         (tf/style {:opacity 0.3}))
+     (mapcat (fn [r] (map #(bezfn r %) bpts)) (range 100 205 7)))))
+
+(def spheres-and-blobs
+  (lo/distribute-on-pts (repeatedly 9 sphere-blobs) (p/rect-grid 3 3 450 450)))
+  
+(svg-clj.tools/cider-show spheres-and-blobs)
+
+#+end_src
+
+** 003
+#+begin_src clojure
+(def scut
+  (let [r 250
+        shell (sphere r)
+        base (mdl/sphere r)
+        dimfn (fn [] (+ (rand-int 40) 27))
+        cutfn (fn [] (-> (mdl/sphere (dimfn))
+                         (mdl/translate ((bc/line [0 0 0] (shell (+ 0.1 (rand 0.8))
+                                                                 (+ 0.1 (rand 0.8)))) (+ 0.2 (rand 0.8))))))]
+    (loop [base base
+           itr 0]
+      (if (< itr 500)
+        (recur (mdl/difference base (cutfn)) (inc itr))
+        base))
+    #_(mdl/difference
+     (conj
+      (repeatedly 200 cutfn)
+      base))))
+
+(spit "forge.scad" (scad/write scut))
+
+#+end_src
+
+** 004
+#+begin_src clojure
+;; WIP
+(defn- shift-face-indices
+  [shift faces]
+  (map (fn [face] (mapv #(+ shift %) face)) faces))
+
+(defn obj
+  ([surface seg] (obj surface seg seg))
+  ([surface useg vseg]
+   (let [surfaces (if (fn? surface) [surface] surface)
+         meshes (map #(bmesh/surface % useg vseg) surfaces)
+         pts (mapcat :pts meshes)
+         quads (mapcat #(apply shift-face-indices %) (map (juxt #(count (:quads %)) #(:quads %)) meshes))
+         entryfn (fn [prefix data] (str/join " " (concat [prefix] data)))
+         verts-str (str/join "\n" (map #(entryfn "v" %) pts))
+         faces-str (str/join "\n" (map #(entryfn "f" %) (map #(mapv inc %) quads)))]
+     quads #_(str/join "\n" [verts-str faces-str]))))
+
+(def slug
+  (let [p (#_bc/polyline bc/bezier [[0 0 500] [-20 -500 300] [120 20 150] [0 0 0]])
+        r 40
+        bump-t 0.6
+        sfn (fn [[ta tb]]
+              (let [rfn #(+ 0.1 (* (/ (if (< % bump-t) % (- 1 %)) bump-t) r))
+                    ca (-> (bc/circle (rfn ta))
+                           (bc/look-at (p ta) (bc/tangent p ta))
+                           (bc/translate (p ta)))
+                    cb (-> (bc/circle (rfn tb))
+                           (bc/look-at (p tb) (bc/tangent p tb))
+                           (bc/translate (p tb)))]
+                (bs/surface ca cb)))
+        surfaces (map sfn (partition 2 1 (range 0 1.012 0.012)))]
+    (mapcat #(drop 2 (svg-surface % 25 1)) surfaces)))
+
+
+#+end_src
+
+** lorenz-attractor
+#+begin_src clojure
 (defn lorenz
   [[sigma rho beta] [x y z]]
   (let [f (fn [[[x y z]
@@ -4941,55 +5166,4 @@ A namespace for playing around with fns
          (clojure.string/join \newline))
     (el/g (map #(-> (el/circle 1) (tf/translate (drop-last %))) (mapcat #(f 0.7 20 p1 %) (range 0 1 step))))))
  
-#+end_src
-
-** importing-svg
-#+begin_src clojure
-(ns forge.scratch
-  (:require [forge.model :as mdl]
-            [forge.utils :as utils]
-            [forge.brep.curves :as bc]
-            [forge.brep.surfaces :as bs]
-            [forge.import.image :as img]
-            [forge.compile.scad :as scad]))
-
-(def a (-> (mdl/circle 20) 
-           (mdl/extrude 100)))
-(def b (-> (mdl/circle 20)
-           (mdl/translate [40 0 0])
-           (mdl/revolve 360)))
-(def c (-> (utils/regular-polygon-pts 30 8)
-           (mdl/polygon)
-           (mdl/translate [180 0 0])
-           (mdl/revolve 180)))
-(def d (-> (img/import "sk.svg")))
-
-(def e (-> (for [t (range 0 1.1 0.1)]
-             ((bc/bezier [[0 0 0] [400 400 400] [700 50 200] [300 -200 100] [30 -500 -100]]) t))
-           (mdl/polyline)))
-
-(def aa
-  (->> (slurp "sk.svg")
-       svg-clj.utils/svg-str->hiccup
-       (drop 2)
-       last
-       (drop 2)
-       last
-       svg-clj.transforms/path->elements))
-
-(svg-clj.tools/cider-show aa)
-(scad/cider-show d)
-
-(defn line-drawing
-  [fname & {:keys [r]}]
-  (-> fname
-      img->str
-      svg-str->hiccup
-      (->> (drop 2))
-      re-center
-      (->> (mapcat path/split-path))
-      (->> (map path->pts))
-      (->> (map #(mdl/polyline %)))
-      mdl/union))
-
 #+end_src
