@@ -4,4 +4,4 @@
   org.clojure/math.numeric-tower {:mvn/version "0.0.4"}
   hiccup/hiccup                  {:mvn/version "2.0.0-alpha2"}
   same/ish                       {:mvn/version "0.1.4"}
-  svg-clj/svg-clj                {:local/root "/Users/adam/dev/svg-clj"}}}
+  svg-clj/svg-clj                {:local/root "/home/pi/dev/svg-clj"}}}

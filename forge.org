@@ -17,7 +17,7 @@
   org.clojure/math.numeric-tower {:mvn/version "0.0.4"}
   hiccup/hiccup                  {:mvn/version "2.0.0-alpha2"}
   same/ish                       {:mvn/version "0.1.4"}
-  svg-clj/svg-clj                {:local/root "/Users/adam/dev/svg-clj"}}}
+  svg-clj/svg-clj                {:local/root "/home/pi/dev/svg-clj"}}}
 
 #+end_src
 
@@ -4884,7 +4884,7 @@ A namespace for playing around with fns
                  (-> (map drop-last pts)
                      el/polygon
                      (tf/style {:fill "none"
-                                :stroke "skyblue"})))))]
+                                :stroke "black"})))))]
      (el/g (remove nil? (map f quads))))))
 
 (defn svg-curve
@@ -5041,12 +5041,27 @@ A namespace for playing around with fns
          faces-str (str/join "\n" (map #(entryfn "f" %) (map #(mapv inc %) quads)))]
      quads #_(str/join "\n" [verts-str faces-str]))))
 
+;; piecewise function of two lines, where the peak has value
+;; out-t = 1 at peak-t
+;; in-t = 0 -> out-t = 0
+;; in-t = peak-t -> out-t = 1
+;; in-t = 1 -> out-t = 0
+(defn tri-t
+  [peak-t]
+  (fn [t]
+    (if (< t peak-t)
+      (* (/ 1 peak-t) t)
+      (+ (* (/ -1 (- 1 peak-t)) (- t peak-t)) 1))))
+
 (def slug
-  (let [p (#_bc/polyline bc/bezier [[0 0 500] [-20 -500 300] [120 20 150] [0 0 0]])
+  (let [p (bc/bezier [[0 0 600]
+                      [200 -100 400]
+                      [-300 250 200]
+                      [0 0 0]])
         r 40
-        bump-t 0.6
+        bump-t 0.55
         sfn (fn [[ta tb]]
-              (let [rfn #(+ 0.1 (* (/ (if (< % bump-t) % (- 1 %)) bump-t) r))
+              (let [rfn #(* (svg-clj.utils/ease-in-out-sin ((tri-t bump-t) %)) r)
                     ca (-> (bc/circle (rfn ta))
                            (bc/look-at (p ta) (bc/tangent p ta))
                            (bc/translate (p ta)))
@@ -5054,7 +5069,7 @@ A namespace for playing around with fns
                            (bc/look-at (p tb) (bc/tangent p tb))
                            (bc/translate (p tb)))]
                 (bs/surface ca cb)))
-        surfaces (map sfn (partition 2 1 (range 0 1.012 0.012)))]
+        surfaces (map sfn (partition 2 1 (range 0 1.01 0.01)))]
     (mapcat #(drop 2 (svg-surface % 25 1)) surfaces)))
 
 
