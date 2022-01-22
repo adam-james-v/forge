@@ -17,7 +17,7 @@
   org.clojure/math.numeric-tower {:mvn/version "0.0.4"}
   hiccup/hiccup                  {:mvn/version "2.0.0-alpha2"}
   same/ish                       {:mvn/version "0.1.4"}
-  svg-clj/svg-clj                {:local/root "/home/pi/dev/svg-clj"}}}
+  svg-clj/svg-clj                {:local/root "/Users/adam/dev/svg-clj"}}}
 
 #+end_src
 
@@ -358,6 +358,15 @@ It is sufficient for Forge for the following reasons:
 
 #+end_src
 
+*** zeroish?
+#+begin_src clojure :tangle ./src/forge/utils.cljc
+(defn my-zeroish?
+  [x]
+  (let [eps 0.00001]
+    (< (Math/abs x) eps)))
+
+#+end_src
+
 To make sure float checks work, I'm implementing unit tests.
 
 The tests here are taken from:
@@ -598,7 +607,7 @@ and re-implemented with clojure.test library.
          ab (v- a b)
          ac (v- a c)
          [x y z] (cross* (add-z ab) (add-z ac))]
-     (when (or (> x eps) (> y eps) (> z eps))
+     (when (or (> (abs x) eps) (> (abs y) eps) (> (abs z) eps))
        [x y z]))))
 
 (defn normalize
@@ -938,6 +947,231 @@ Put another way, the angle is measured following the 'right hand rule' around p2
          (<= (cross*-k bc bpt) 0)
          (<= (cross*-k ca cpt) 0)))))
 
+(defn pt-on-perimeter?
+  [[a b c] pt]
+  (some true? (map #(on-line? pt %) (partition 2 1 [a b c a]))))
+               
+#+end_src
+
+** rotation-scratch-quaternions-axis-angle-euler
+#+begin_src clojure :tangle ./src/forge/utils.cljc
+(defn axis-angle
+  [va vb]
+  (let [angle (-> (dot* (normalize va) (normalize vb))
+                  Math/acos
+                  to-deg)
+        axis (normalize (cross* va vb))]
+    [axis angle]))
+
+(defn axis-angle->euler
+  [axis angle]
+  (let [eps 0.00001
+        angle (to-rad angle)
+        ah (/ angle 2.0)
+        [x y z] (normalize axis)]
+    (cond
+      (and (pos? z) (< (abs (- 1 z)) eps)) ;; points up
+      (mapv to-deg
+            [0
+             (/ Math/PI 2)
+             (* 2 (Math/atan2 (* x (Math/sin ah)) (Math/cos ah)))])
+      
+      (and (neg? z) (< (abs (- 1 z)) eps)) ;; points down
+      (mapv to-deg
+            [0
+             (/ Math/PI -2)
+             (* -2 (Math/atan2 (* x (Math/sin ah)) (Math/cos ah)))])
+      
+      :else
+      (mapv to-deg
+            [(Math/atan2
+              (- (* x (Math/sin angle)) (* y z (- 1 (Math/cos angle))))
+              (- 1 (* (+ (* x x) (* z z)) (- 1 (Math/cos angle)))))
+             (Math/asin (+ (* x y (- 1 (Math/cos angle))) (* z (Math/sin angle))))
+             (Math/atan2
+              (- (* y (Math/sin angle)) (* x z (- 1 (Math/cos angle))))
+              (- 1 (* (+ (* y y) (* z z)) (- 1 (Math/cos angle)))))]))))
+
+(defn axis-angle->quaternion
+  [axis angle]
+  (let [[ax ay az] (normalize axis)
+        ha (/ (to-rad angle) 2.0)
+        qx (* ax (Math/sin ha))
+        qy (* ay (Math/sin ha))
+        qz (* az (Math/sin ha))
+        qw (Math/cos ha)]
+    (normalize [qx qy qz qw])))
+
+;; heading = Z
+;; attitude = Y
+;; bank = X
+;; my own convention, probably should change and/or document it better
+;; ZYX is application order, but vector returns [ax ay az] which is fed into (rotate ...)
+
+(defn quaternion->euler
+  [[qx qy qz qw]]
+  (let [eps 0.00001
+        pole (+ (* qx qy) (* qz qw))]
+    (cond
+      (< (abs (- pole 0.5)) eps) ;; pole close to 0.5 is N
+      (mapv to-deg
+            [0
+             (/ Math/PI 2)
+             (* 2 (Math/atan2 qx qw))])
+
+      (< (abs (+ pole 0.5)) eps) ;; pole close to -0.5 is S
+      (mapv to-deg
+            [0
+             (/ Math/PI -2)
+             (* -2 (Math/atan2 qx qw))])
+
+      :else
+      (mapv to-deg
+            [(Math/atan2 (- (* 2 qx qw) (* 2 qy qz)) (- 1 (* 2 qx qx) (* 2 qz qz)))
+             (Math/asin (+ (* 2 qx qy) (* 2 qz qw)))
+             (Math/atan2 (- (* 2 qy qw) (* 2 qx qz)) (- 1 (* 2 qy qy) (* 2 qz qz)))]))))
+
+(defn euler
+  [va vb]
+  (->> (axis-angle va vb)
+       (apply axis-angle->quaternion)
+       quaternion->euler))
+
+;; http://www.euclideanspace.com/maths/geometry/rotations/conversions/quaternionToAngle/index.htm
+(defn quaternion->axis-angle
+  [q]
+  (let [eps 0.00001
+        [qx qy qz qw] (normalize q)
+        angle (to-deg (* 2 (Math/acos qw)))
+        s (Math/sqrt (- 1 (* qw qw)))]
+    (if (< s eps)
+      #_[[qx qy qz] angle] [[1 0 0] angle]
+      [[(/ qx s) (/ qy s) (/ qz s)] angle])))
+
+(defn rotate-pt-aa
+  [pt axis angle]
+  (let [angle (to-rad angle)
+        axis (normalize axis)
+        d (v* (repeat 3 (dot* axis pt)) axis)
+        r (v- pt d)
+        rp (v+ (v* r (repeat 3 (Math/cos angle)))
+                     (v* (cross* axis r) (repeat 3 (Math/sin angle))))]
+    (v+ d rp)))
+
+;; https://stackoverflow.com/a/52551983
+(defn look-at-quaternion
+  [from to world-up]
+  (let [world-up (normalize world-up)
+        [fx fy fz :as forward] (normalize (v- from to))
+        [rx ry rz :as right] (normalize (cross* world-up forward))
+        [ux uy uz :as up] (cross* forward right)
+        trace (+ rx uy fz)]
+    (cond
+      (> trace 0)
+      (let [s (/ 0.5 (Math/sqrt (+ trace 1.0)))
+            x (* (- uz fy) s)
+            y (* (- fx rz) s)
+            z (* (- ry ux) s)
+            w (/ 0.25 s)]
+        [x y z w])
+
+      (and (> rx uy) (> rx fz))
+      (let [s (* 2 (Math/sqrt (+ 1 rx (- uy) (- fz))))
+            x (* 0.25 s)
+            y (/ (+ ux ry) s)
+            z (/ (+ fx rz) s)
+            w (/ (- uz fy) s)]
+        [x y z w])
+
+      (> uy fz)
+      (let [s (* 2 (Math/sqrt (+ 1 uy (- rx) (- fz))))
+            x (/ (+ ux ry) s)
+            y (* 0.25 s)
+            z (/ (+ fy uz) s)
+            w (/ (- fx rz) s)]
+        [x y z w])
+
+      :else
+      (let [s (* 2 (Math/sqrt (+ 1 fz (- rx) (- uy))))
+            x (/ (+ fx rz) s)
+            y (/ (+ fy uz) s)
+            z (* 0.25 s)
+            w (/ (- ry ux) s)]
+        [x y z w]))))
+
+(defn transform-pt-quaternion
+  [[px py pz] [x y z w]]
+  [(+ (* w w px) (* 2 y w pz) (* -2 z w py) (* x x px)
+      (* 2 y x py) (* 2 z x pz) (* -1 z z px) (* -1 y y px))
+
+   (+ (* 2 x y px) (* y y py) (* 2 z y pz) (* 2 w z px)
+      (* -1 z z py) (* w w py) (* -2 x w pz) (* -1 x x py))
+
+   (+ (* 2 x z px) (* 2 y z py) (* z z pz) (* -2 w y px)
+      (* -1 y y pz) (* 2 w x py) (* x x pz) (* w w pz))])
+
+(defn axis-angle->quaternion
+  [axis angle]
+  (let [[ax ay az] (normalize axis)
+        ha (/ (to-rad angle) 2.0)
+        qx (* ax (Math/sin ha))
+        qy (* ay (Math/sin ha))
+        qz (* az (Math/sin ha))
+        qw (Math/cos ha)]
+    (normalize [qx qy qz qw])))
+
+;; http://www.euclideanspace.com/maths/algebra/vectors/lookat/index.htm
+(defn look-at-axis-angle
+  [pt eye current target world-up]
+  (let [world-up (normalize world-up)
+        ncurrent (normalize (v- current eye))
+        ntarget  (normalize (v- target eye))
+        axis (cross* ncurrent ntarget)
+        a1 (to-deg (dot* ncurrent ntarget))
+        [a b c] target
+        axis2 [(* (- a) b) (+ (* a a) (* c c)) (* (- c) b)]
+        a2 (to-deg (Math/acos (dot* world-up axis2)))
+        q1 (axis-angle->quaternion axis a1)
+        q2 (axis-angle->quaternion axis2 a2)]
+    (-> pt
+        (transform-pt-quaternion q2)
+        (transform-pt-quaternion q1))))
+
+#+end_src
+
+** transform-pt-by-matrix
+#+begin_src clojure :tangle ./src/forge/utils.cljc
+(defn- grc
+  [m [r c]]
+  (get-in m [c r]))
+
+(defn transform-pt-matrix
+  [pt m]
+  (let [eps 0.00001
+        [px py pz] pt
+        x (+ (* px (grc m [0 0])) (* py (grc m [0 1])) (* pz (grc m [0 2])) (grc m [0 3]))
+        y (+ (* px (grc m [1 0])) (* py (grc m [1 1])) (* pz (grc m [1 2])) (grc m [1 3]))
+        z (+ (* px (grc m [2 0])) (* py (grc m [2 1])) (* pz (grc m [2 2])) (grc m [2 3]))
+        w (+ (* px (grc m [3 0])) (* py (grc m [3 1])) (* pz (grc m [3 2])) (grc m [3 3]))]
+    (if (and (not (zeroish? (- w 1)))
+             (not (zeroish? w)))
+      [(double (/ x w)) (double (/ y w)) (double (/ z w))]
+      [x y z])))
+
+#+end_src
+
+** look-at-matrix
+#+begin_src clojure :tangle ./src/forge/utils.cljc
+(defn look-at-matrix
+  [from to world-up]
+  (let [w (normalize to)
+        u (normalize (cross* world-up w))
+        v (normalize (cross* w u))]
+    (mapv vec [(concat u [0])
+               (concat v [0])
+               (concat w [0])
+               (concat from [1])])))
+
 #+end_src
 
 ** misc
@@ -997,7 +1231,7 @@ Put another way, the angle is measured following the 'right hand rule' around p2
       (let [d [(utils/determinant a b) (utils/determinant c d)]
             x (/ (utils/determinant d xdiff) div)
             y (/ (utils/determinant d ydiff) div)]
-        [x y]))))
+        (mapv double [x y])))))
 
 (defn line-segment-intersection
   [[a b] [c d]]
@@ -1130,91 +1364,63 @@ For consideration:
        (mapv first sorted)
        (recur lines next (conj sorted next))))))
 
-(defn- pt-inside?
+(defn pt-inside?
   [pg pt]
   (let [tris (:tris (clip-ears/triangulate pg))]
-    (= #{true false}
-       (set (map #(utils/pt-inside? % pt) tris)))))
+    (some true? (concat
+                 (map #(utils/pt-on-perimeter? % pt) tris)
+                 (map #(utils/pt-inside? % pt) tris)))))
+
+(defn overlap?
+  [pga pgb]
+  (some true? (map #(pt-inside? pga %) pgb)))
+
+(defn polygon-difference
+  [pga pgb]
+  (when (overlap? pga pgb)
+    (let [in-b (filter #(pt-inside? pgb %) pga)
+          in-a (filter #(pt-inside? pga %) pgb)
+          rem-a (->> pga
+                     (partition-by (set in-b))
+                     (remove #((set in-b) (first %)))
+                     reverse
+                     (apply concat))
+          rem-b (->> pgb
+                     (partition-by (set in-a))
+                     (remove #((set in-a) (first %)))
+                     reverse
+                     (apply concat))
+          crossing-1 [[(last rem-a) (first in-b)]
+                      [(last in-a) (first rem-b)]]
+          crossing-2 [[(first rem-a) (last in-b)]
+                      [(first in-a) (last rem-b)]]
+          [i1 i2] (map #(apply line-segment-intersection %) [crossing-1 crossing-2])]
+      (concat rem-a [i1] (reverse in-a) [i2]))))
 
 (defn polygon-union
   [pga pgb]
-  (let [xs (polygon-intersection pga pgb)
-        ;; trim lines at intersection points
-        ls (apply concat 
-                  (for [l (mapcat utils/edges [pga pgb])]
-                    (let [trims (->> #_(map #(trim-at-pts l [%]) xs)
-                                     [(trim-at-pts l xs)]
-                                     #_(filter #(not (nil? %))))]
-                      (if (> (count trims) 0)
-                        (apply concat trims)
-                        [l]))))
-        ;; remove degenerate lines (= pta ptb)
-        ls (filter #(not (= (first %) (second %))) ls)
-        ;; get lines that are not in polygon a
-        a (filter #(not (pt-inside? pga (utils/centroid-of-pts %))) ls)
-        ;; get lines that are not in polygon b
-        b (filter #(not (pt-inside? pgb (utils/centroid-of-pts %))) ls)
-        ;; get lines with midpoints on both perimeters
-        c (filter #(and (on-perimeter? pga (utils/centroid-of-pts %))
-                        (on-perimeter? pgb (utils/centroid-of-pts %))) ls)]
-    a #_(->> (concat a b c)
-         (remove nil?)
-         distinct
-         #_(order-lines))))
-
-#_(let [col #(first (shuffle ["blue" "red" "green" "white" "limegreen" "skyblue" "slategray" "gray"
-                            "cyan" "yellow" "magenta" "pink" "hotpink" "black"]))
-      pga (utils/regular-polygon-pts 120 8)
-      pgb (map #(utils/v+ % [70.0 71.0]) (utils/regular-polygon-pts 120 8))
-      pgc (polygon-union pga pgb)
-      xs (polygon-intersection pga pgb)]
-  (svg-clj.tools/cider-show
-   (svg-clj.elements/g
-    (when (< 0 (count xs))
-      (map #(-> (svg-clj.elements/circle 3)
-                (svg-clj.transforms/translate %)
-                (svg-clj.transforms/style {:fill "limegreen"})) xs))
-    (-> (svg-clj.elements/polygon pga)
-        (svg-clj.transforms/style {:fill "none" :stroke "blue"}))
-    (-> (svg-clj.elements/polygon pgb)
-        (svg-clj.transforms/style {:fill "none" :stroke "blue"}))
-    #_(-> (svg-clj.elements/polygon (apply concat pgc))
-        (svg-clj.transforms/style {:fill "none" :stroke "red"}))
-    (map #(-> (apply svg-clj.elements/line %)
-              (svg-clj.transforms/style {:stroke (col) #_"limegreen"})) pgc))))
+  (when (overlap? pga pgb)
+    (let [in-b (filter #(pt-inside? pgb %) pga)
+          in-a (filter #(pt-inside? pga %) pgb)
+          rem-a (->> pga
+                     (partition-by (set in-b))
+                     (remove #((set in-b) (first %)))
+                     reverse
+                     (apply concat))
+          rem-b (->> pgb
+                     (partition-by (set in-a))
+                     (remove #((set in-a) (first %)))
+                     reverse
+                     (apply concat))
+          crossing-1 [[(last rem-a) (first in-b)]
+                      [(last in-a) (first rem-b)]]
+          crossing-2 [[(first rem-a) (last in-b)]
+                      [(first in-a) (last rem-b)]]
+          [i1 i2] (map #(apply line-segment-intersection %) [crossing-1 crossing-2])]
+      (concat rem-a [i1] rem-b [i2]))))
 
 #+end_src
 
-** polygon-difference
-#+begin_src clojure :tangle ./src/forge/geom.cljc
-(defn polygon-difference
-  "Polygon B Cuts Polygon A"
-  [pga pgb]
-  (let [xs (polygon-intersection pga pgb)
-        ;; trim lines at intersection points
-        ls (apply concat 
-                  (for [l (mapv vec (mapcat utils/edges [pga pgb]))]
-                    (let [trims (->> #_(map #(trim-at-pts l [%]) xs)
-                                     [(trim-at-pts l xs)]
-                                     (filter #(not (nil? %))))]
-                      (if (> (count trims) 0)
-                        (apply concat trims)
-                        [l]))))
-        ;; remove degenerate lines (= pta ptb)
-        ls (filter #(not (= (first %) (second %))) ls)
-        ;; get lines that are in polygon a
-        a (filter #(pt-inside? pga (utils/centroid-of-pts %)) ls)
-        ;; get lines that are in polygon b
-        b (filter #(pt-inside? pgb (utils/centroid-of-pts %)) ls)
-        ;; get lines with midpoints on both perimeters
-        c (filter #(and (on-perimeter? pga (utils/centroid-of-pts %))
-                        (on-perimeter? pgb (utils/centroid-of-pts %))) ls)]
-    (->> (concat a b c)
-         (remove nil?)
-         (into #{})
-         (order-lines))))
-
-#+end_src
 
 - there are cases where a segment has >1 intersection point along itself. Currently, it gets 'passed over' once a single trim has occurred on it. Technically, need some sort of iteration or recursion over this so that new trimmed segments are also checked for trims with other intersections
 
@@ -1388,7 +1594,7 @@ I have to change this to work on 3D points. It currently drops any Z values.
         corners (->> pts
                      (#(concat % (take 2 %)))
                      (partition 3 1)
-                     (filter #(#{:convex} (apply utils/corner-condition %))))
+                     #_(filter #(#{:convex} (apply utils/corner-condition %))))
         clear? (fn [corner]
                  (not (seq (filter #(utils/pt-inside? corner %) pts))))
         tri (first (filter clear? corners))]
@@ -1406,6 +1612,7 @@ I have to change this to work on 3D points. It currently drops any Z values.
        (recur data npts (conj tris tri) (conj indices local-indices))))))
 
 #+END_SRC
+
 * frep
 ** ns
 #+begin_src clojure :tangle ./src/forge/frep.cljc
@@ -1830,7 +2037,7 @@ This check does not determine yet if the implied function from :fn :input will b
         b (curve (+ t eps))
         a (if a a (curve 0))
         b (if b b (curve 1))]
-    (-> (utils/v- a b)
+    (-> (utils/v- b a)
         (utils/normalize))))
 
 #+end_src
@@ -1899,7 +2106,7 @@ This check does not determine yet if the implied function from :fn :input will b
     (fn
       ([] {:fn `polyline
            :input [pts]
-           :origin (utils/centroid-of-pts pts)
+           :origin [0 0 0] #_(utils/centroid-of-pts pts)
            :vertex-params (concat [0] (mapv second intervals))
            :dimension (count (first pts))
            :length length})
@@ -1931,7 +2138,7 @@ This check does not determine yet if the implied function from :fn :input will b
     (fn
       ([] {:fn `polygon
            :input [pts]
-           :origin (utils/centroid-of-pts pts)
+           :origin [0 0 0] #_(utils/centroid-of-pts pts)
            :vertex-params (concat [0] (mapv second intervals))
            :dimension (count (first pts))
            :length (reduce + (map #(:length (%)) lines))})
@@ -2289,59 +2496,7 @@ I need to update my requirements in my curves map design. I should include an :o
 
 *** look-at
 #+begin_src clojure :tangle ./src/forge/brep/curves.cljc
-;; https://stackoverflow.com/a/52551983
-(defn look-at-quaternion
-  [from to world-up]
-  (let [world-up (utils/normalize world-up)
-        [fx fy fz :as forward] (utils/normalize (utils/v- from to))
-        [rx ry rz :as right] (utils/normalize (utils/cross* world-up forward))
-        [ux uy uz :as up] (utils/cross* forward right)
-        trace (+ rx uy fz)]
-    (cond
-      (> trace 0)
-      (let [s (/ 0.5 (Math/sqrt (+ trace 1.0)))
-            x (* (- uz fy) s)
-            y (* (- fx rz) s)
-            z (* (- ry ux) s)
-            w (/ 0.25 s)]
-        [x y z w])
-
-      (and (> rx uy) (> rx fz))
-      (let [s (* 2 (Math/sqrt (+ 1 rx (- uy) (- fz))))
-            x (* 0.25 s)
-            y (/ (+ ux ry) s)
-            z (/ (+ fx rz) s)
-            w (/ (- uz fy) s)]
-        [x y z w])
-
-      (> uy fz)
-      (let [s (* 2 (Math/sqrt (+ 1 uy (- rx) (- fz))))
-            x (/ (+ ux ry) s)
-            y (* 0.25 s)
-            z (/ (+ fy uz) s)
-            w (/ (- fx rz) s)]
-        [x y z w])
-
-      :else
-      (let [s (* 2 (Math/sqrt (+ 1 fz (- rx) (- uy))))
-            x (/ (+ fx rz) s)
-            y (/ (+ fy uz) s)
-            z (* 0.25 s)
-            w (/ (- ry ux) s)]
-        [x y z w]))))
-
-(defn transform-pt-quaternion
-  [[px py pz] [x y z w]]
-  [(+ (* w w px) (* 2 y w pz) (* -2 z w py) (* x x px)
-      (* 2 y x py) (* 2 z x pz) (* -1 z z px) (* -1 y y px))
-
-   (+ (* 2 x y px) (* y y py) (* 2 z y pz) (* 2 w z px)
-      (* -1 z z py) (* w w py) (* -2 x w pz) (* -1 x x py))
-
-   (+ (* 2 x z px) (* 2 y z py) (* z z pz) (* -2 w y px)
-      (* -1 y y pz) (* 2 w x py) (* x x pz) (* w w pz))])
-
-(defn look-at
+#_(defn look-at
   [f [px py pz] [ux uy uz]]
   (let [data (f)
         ctr (utils/add-z (:origin data))
@@ -2355,6 +2510,54 @@ I need to update my requirements in my curves map design. I should include an :o
        (-> (f t)
            utils/add-z
            (transform-pt-quaternion (look-at-quaternion ctr [px py pz] [ux uy uz])))))))
+
+(defn- aligned?
+  [[ax ay az] [bx by bz]]
+  (and (utils/my-zeroish? (Math/abs (- ax bx)))
+       (utils/my-zeroish? (Math/abs (- ay by)))
+       (utils/my-zeroish? (Math/abs (- az bz)))))
+
+(defn find-up
+  [c]
+  (let [data (c)
+        [a b c :as pts] (map c [0 0.333 0.667])
+        is-line (utils/on-line-inf? a [b c])
+        v1 (utils/normalize (utils/v- b a))]
+    (cond
+      (= (:dimension data) 2)
+      [0 0 1]
+
+      (not is-line)
+      (-> (apply utils/normal pts)
+          utils/normalize)
+
+      (and is-line (aligned? v1 [0 0 1]))
+      [0 1 0]
+      
+      :else
+      [0 0 1])))
+
+(defn look-at
+  ([c target] (look-at c target (find-up c)))
+  ([c target up]
+   (let [data (c)
+        ctr (utils/add-z (:origin data))
+        dim 3]
+    (fn
+      ([] (merge data
+                 {:fn `look-at
+                  :input [c target up]
+                  :origin ctr
+                  :dimension dim}))
+      ([t]
+       (if (utils/colinear? (utils/normalize up) ctr target)
+         (c t)
+         (let [m (utils/look-at-matrix [0 0 0] (utils/v- target ctr) up)]
+         (-> (c t)
+             utils/add-z
+             (utils/v- ctr)
+             (utils/transform-pt-matrix m)
+             (utils/v+ ctr)))))))))
 
 #+end_src
 
@@ -2594,6 +2797,22 @@ This check does not determine yet if the implied function from :fn :input will b
       ([u v]
        (let [rad (c/line ctr (perim u))]
          (rad v))))))
+#+end_src
+
+*** spherical-surfaces
+#+begin_src clojure :tangle ./src/forge/brep/surfaces.cljc
+(defn sphere
+  [r]
+  (fn
+    ([] {:fn `sphere
+         :input [r]
+         :origin [0 0 0]})
+    ([u v]
+     (let [[u v] (map #(* 2 Math/PI %) [u v])
+           x (* r (Math/sin u) (Math/cos v))
+           y (* r (Math/sin u) (Math/sin v))
+           z (* r (Math/cos u))]
+       [x y z]))))
 
 #+end_src
 
@@ -2627,191 +2846,16 @@ This check does not determine yet if the implied function from :fn :input will b
                   :dimension dim}))
       ([u v]
        (-> (f u v)
-           (utils/v+ (map - ctr))
+           #_(utils/v+ (map - ctr))
            (utils/rotate-pt [ax ay az])
-           (utils/v+ ctr))))))
-
-#+end_src
-
-*** look-at
-#+begin_src clojure :tangle ./src/forge/brep/surfaces.cljc
-;; https://stackoverflow.com/a/52551983
-(defn- look-at-quaternion
-  [from to world-up]
-  (let [world-up (utils/normalize world-up)
-        [fx fy fz :as forward] (utils/normalize (utils/v- from to))
-        [rx ry rz :as right] (utils/normalize (utils/cross* world-up forward))
-        [ux uy uz :as up] (utils/cross* forward right)
-        trace (+ rx uy fz)]
-    (cond
-      (> trace 0)
-      (let [s (/ 0.5 (Math/sqrt (+ trace 1.0)))
-            x (* (- uz fy) s)
-            y (* (- fx rz) s)
-            z (* (- ry ux) s)
-            w (/ 0.25 s)]
-        [x y z w])
-
-      (and (> rx uy) (> rx fz))
-      (let [s (* 2 (Math/sqrt (+ 1 rx (- uy) (- fz))))
-            x (* 0.25 s)
-            y (/ (+ ux ry) s)
-            z (/ (+ fx rz) s)
-            w (/ (- uz fy) s)]
-        [x y z w])
-
-      (> uy fz)
-      (let [s (* 2 (Math/sqrt (+ 1 uy (- rx) (- fz))))
-            x (/ (+ ux ry) s)
-            y (* 0.25 s)
-            z (/ (+ fy uz) s)
-            w (/ (- fx rz) s)]
-        [x y z w])
-
-      :else
-      (let [s (* 2 (Math/sqrt (+ 1 fz (- rx) (- uy))))
-            x (/ (+ fx rz) s)
-            y (/ (+ fy uz) s)
-            z (* 0.25 s)
-            w (/ (- ry ux) s)]
-        [x y z w]))))
-
-(defn transform-pt-quaternion
-  [[px py pz] [x y z w]]
-  [(+ (* w w px) (* 2 y w pz) (* -2 z w py) (* x x px)
-      (* 2 y x py) (* 2 z x pz) (* -1 z z px) (* -1 y y px))
-
-   (+ (* 2 x y px) (* y y py) (* 2 z y pz) (* 2 w z px)
-      (* -1 z z py) (* w w py) (* -2 x w pz) (* -1 x x py))
-
-   (+ (* 2 x z px) (* 2 y z py) (* z z pz) (* -2 w y px)
-      (* -1 y y pz) (* 2 w x py) (* x x pz) (* w w pz))])
-
-
-(defn look-at
-  [f [px py pz] [ux uy uz]]
-  (let [data (f)
-        ctr (utils/add-z (:origin data))
-        dim 3]
-    (fn
-      ([] (merge data
-                 {:fn `look-at
-                  :input [f [px py pz] [ux uy uz]]
-                  :dimension dim}))
-      ([u v]
-       (-> (f u v)
-           utils/add-z
-           (transform-pt-quaternion (look-at-quaternion ctr [px py pz] [ux uy uz])))))))
+           #_(utils/v+ ctr))))))
 
 #+end_src
 
 *** extrude-along
 #+begin_src clojure :tangle ./src/forge/brep/surfaces.cljc
-(defn axis-angle
-  [va vb]
-  (let [angle (-> (utils/dot* (utils/normalize va) (utils/normalize vb))
-                  Math/acos
-                  utils/to-deg)
-        axis (utils/normalize (utils/cross* va vb))]
-    [axis angle]))
-
-(defn axis-angle->euler
-  [axis angle]
-  (let [eps 0.00001
-        angle (utils/to-rad angle)
-        ah (/ angle 2.0)
-        [x y z] (utils/normalize axis)]
-    (cond
-      (and (pos? z) (< (utils/abs (- 1 z)) eps)) ;; points up
-      (mapv utils/to-deg
-            [0
-             (/ Math/PI 2)
-             (* 2 (Math/atan2 (* x (Math/sin ah)) (Math/cos ah)))])
-      
-      (and (neg? z) (< (utils/abs (- 1 z)) eps)) ;; points down
-      (mapv utils/to-deg
-            [0
-             (/ Math/PI -2)
-             (* -2 (Math/atan2 (* x (Math/sin ah)) (Math/cos ah)))])
-      
-      :else
-      (mapv utils/to-deg
-            [(Math/atan2
-              (- (* x (Math/sin angle)) (* y z (- 1 (Math/cos angle))))
-              (- 1 (* (+ (* x x) (* z z)) (- 1 (Math/cos angle)))))
-             (Math/asin (+ (* x y (- 1 (Math/cos angle))) (* z (Math/sin angle))))
-             (Math/atan2
-              (- (* y (Math/sin angle)) (* x z (- 1 (Math/cos angle))))
-              (- 1 (* (+ (* y y) (* z z)) (- 1 (Math/cos angle)))))]))))
-
-(defn axis-angle->quaternion
-  [axis angle]
-  (let [[ax ay az] (utils/normalize axis)
-        ha (/ (utils/to-rad angle) 2.0)
-        qx (* ax (Math/sin ha))
-        qy (* ay (Math/sin ha))
-        qz (* az (Math/sin ha))
-        qw (Math/cos ha)]
-    (utils/normalize [qx qy qz qw])))
-
-;; heading = Z
-;; attitude = Y
-;; bank = X
-;; my own convention, probably should change and/or document it better
-;; ZYX is application order, but vector returns [ax ay az] which is fed into (rotate ...)
-
-(defn quaternion->euler
-  [[qx qy qz qw]]
-  (let [eps 0.00001
-        pole (+ (* qx qy) (* qz qw))]
-    (cond
-      (< (utils/abs (- pole 0.5)) eps) ;; pole close to 0.5 is N
-      (mapv utils/to-deg
-            [0
-             (/ Math/PI 2)
-             (* 2 (Math/atan2 qx qw))])
-
-      (< (utils/abs (+ pole 0.5)) eps) ;; pole close to -0.5 is S
-      (mapv utils/to-deg
-            [0
-             (/ Math/PI -2)
-             (* -2 (Math/atan2 qx qw))])
-
-      :else
-      (mapv utils/to-deg
-            [(Math/atan2 (- (* 2 qx qw) (* 2 qy qz)) (- 1 (* 2 qx qx) (* 2 qz qz)))
-             (Math/asin (+ (* 2 qx qy) (* 2 qz qw)))
-             (Math/atan2 (- (* 2 qy qw) (* 2 qx qz)) (- 1 (* 2 qy qy) (* 2 qz qz)))]))))
-
-(defn euler
-  [va vb]
-  (->> (axis-angle va vb)
-       (apply axis-angle->quaternion)
-       quaternion->euler))
-
-;; http://www.euclideanspace.com/maths/geometry/rotations/conversions/quaternionToAngle/index.htm
-(defn quaternion->axis-angle
-  [q]
-  (let [eps 0.00001
-        [qx qy qz qw] (utils/normalize q)
-        angle (utils/to-deg (* 2 (Math/acos qw)))
-        s (Math/sqrt (- 1 (* qw qw)))]
-    (if (< s eps)
-      #_[[qx qy qz] angle] [[1 0 0] angle]
-      [[(/ qx s) (/ qy s) (/ qz s)] angle])))
-
-(defn rotate-pt-aa
-  [pt axis angle]
-  (let [angle (utils/to-rad angle)
-        axis (utils/normalize axis)
-        d (utils/v* (repeat 3 (utils/dot* axis pt)) axis)
-        r (utils/v- pt d)
-        rp (utils/v+ (utils/v* r (repeat 3 (Math/cos angle)))
-                     (utils/v* (utils/cross* axis r) (repeat 3 (Math/sin angle))))]
-    (utils/v+ d rp)))
-
 (defn extrude-along
-  ([xs path] (extrude-along xs path [0 0 1]))
+  ([xs path] (extrude-along xs path (c/find-up path)))
   ([xs path up]
    (let [xs (c/to-3D xs)
          path (c/to-3D path)
@@ -2820,18 +2864,80 @@ This check does not determine yet if the implied function from :fn :input will b
      (fn
        ([] {:fn `extrude-along
             :input [xs path up]
-            :origin origin})
+            :origin origin
+            :dimension 3})
        ([u v]
-        (let [pt (utils/add-z (xs v))
-              path-pt (utils/add-z (path u))
-              path-tangent (c/tangent path u)
-              path-normal (c/normal path u up)
-              xs-normal [0 0 1]
-              q (look-at xs-normal path-tangent path-normal)
-              xpt (-> pt
-                      (transform-pt-quaternion q)
-                      (utils/v+ path-pt))]
-          xpt))))))
+        (let [path-tangent (c/tangent path v)
+              m (utils/look-at-matrix (path v) path-tangent up)]
+          (-> (xs u)
+              (utils/transform-pt-matrix m))))))))
+
+(defn extrude-fn-along
+  ([xsfn path] (extrude-fn-along xsfn path (c/find-up path)))
+  ([xsfn path up]
+   (let [path (c/to-3D path)
+         data (path)
+         origin (:origin data)]
+     (fn
+       ([] {:fn `extrude-fn-along
+            :input [xsfn path up]
+            :origin origin
+            :dimension 3})
+       ([u v]
+        (let [xs (xsfn v)
+              path-tangent (c/tangent path v)
+              m (utils/look-at-matrix (path v) path-tangent up)]
+          (-> (xs u)
+              (utils/transform-pt-matrix m))))))))
+
+#+end_src
+
+*** revolve
+#+begin_src clojure :tangle ./src/forge/brep/surfaces.cljc
+#_(defn revolve
+  ([xs] (revolve xs [[0 0 0] [0 0 1]]))
+  ([xs [a b :as axis]]
+   (let [up (utils/v- b a)
+         path (-> (c/circle 2)
+                  c/to-3D
+                  (c/translate a)
+                  (c/look-at b up))
+         xs (c/to-3D xs)
+         data (path)
+         origin (:origin data)
+         nup (c/find-up path)]
+     (fn
+       ([] {:fn `revolve
+            :input [xs axis]
+            :origin origin
+            :dimension 3})
+       ([u v]
+        (let [path-tangent (c/tangent path v)
+              m (utils/look-at-matrix (path v) path-tangent nup)]
+          (-> (xs u)
+              (utils/transform-pt-matrix m)
+              (utils/v- (path v)))))))))
+
+(defn revolve
+  ([xs] (revolve xs [[0 0 0] [0 0 1]]))
+  ([xs [a b :as axis]]
+   (let [up (utils/v- b a)
+         xs (-> xs
+                c/to-3D
+                #_(c/rotate [0 90 0])
+                (c/translate a)
+                (c/look-at b up))
+         data (xs)
+         origin (:origin data)]
+     (fn
+       ([] {:fn `revolve
+            :input [xs axis]
+            :origin origin
+            :dimension 3})
+       ([u v]
+        (let [angle (* v 360)]
+          (-> (xs u)
+              (utils/rotate-pt-aa (utils/v- b a) angle))))))))
 
 #+end_src
 
@@ -2917,8 +3023,7 @@ This check does not determine yet if the implied function from :fn :input will b
 #+begin_src clojure :tangle ./src/forge/brep/mesh.cljc
 (defn curve
   [curve seg]
-  (let [eps 0.00001
-        step (double (/ 1 seg))
+  (let [step (double (/ 1 seg))
         ts (range 0 1 step)]
     {:pts (map curve ts)}))
 
@@ -2926,10 +3031,52 @@ This check does not determine yet if the implied function from :fn :input will b
 
 *** surface
 #+begin_src clojure :tangle ./src/forge/brep/mesh.cljc
-(defn surface
-  ([surf seg] (surface seg seg))
+(defn single-surface
+  ([surf seg] (single-surface seg seg))
   ([surf useg vseg]
    (let [eps 0.00001
+         ustep (double (/ 1 useg))
+         vstep (double (/ 1 vseg))
+         uvs (rect-grid (inc useg) (inc vseg) ustep vstep)
+         trifn (fn [idx]
+                 (when-not
+                     (and (not= 0 idx)
+                          (= 0 (int (mod (inc idx) (inc useg)))))
+                   (let [a idx
+                         b (inc idx)
+                         d (- (+ idx 1 useg) 0 #_(- useg vseg))
+                         c (inc d)]
+                     [[a b c] [a c d]]
+                     #_[[idx (+ idx (inc useg)) (inc idx)]
+                    [(inc idx) (+ 1 idx useg) (+ 2 idx useg)]])))
+         quadfn (fn [[a b c] [_ _ d]] [a b c d])
+         tris (->> (range (inc (count uvs)))
+                   (take (inc (* (inc useg) vseg)))
+                   (mapcat trifn)
+                   (remove nil?)
+                   (drop-last 2))
+         quads (map #(apply quadfn %) (partition 2 tris))]
+     {:pts (mapv #(apply surf %) uvs)
+      :tris (vec tris)
+      :quads (vec quads)})))
+
+(defn- shift-face-indices
+  [shift faces]
+  (map (fn [face] (mapv #(+ shift %) face)) faces))
+
+(defn mesh-merge
+  ([mesh] mesh)
+  ([mesha meshb]
+   (let [shift (count (:pts mesha))]
+     {:pts (vec (concat (:pts mesha) (:pts meshb)))
+      :tris (vec (concat (:tris mesha) (shift-face-indices shift (:tris meshb))))
+      :quads (vec (concat (:quads mesha) (shift-face-indices shift (:quads meshb))))})))
+
+#_(defn surface
+  ([surf seg] (surface seg seg))
+  ([surf useg vseg]
+   (let [surfaces (if (fn? surface) [surface] surface)
+         eps 0.00001
          ustep (double (/ 1 useg))
          vstep (double (/ 1 vseg))
          uvs (rect-grid (inc useg) (inc vseg) ustep vstep)
@@ -2954,6 +3101,13 @@ This check does not determine yet if the implied function from :fn :input will b
      {:pts (map #(apply surf %) uvs)
       :tris tris
       :quads quads})))
+
+(defn surface
+  ([surf seg] (surface seg seg))
+  ([surf useg vseg]
+   (let [surfaces (if (fn? surf) [surf] surf)
+         meshes (map #(single-surface % useg vseg) surfaces)]
+     (reduce mesh-merge meshes))))
 
 #+end_src
 
@@ -4812,6 +4966,8 @@ A namespace for playing around with fns
 * axiart
 ** svg-surface
 #+begin_src clojure
+(load-file "src/forge/utils.cljc")
+(load-file "src/forge/geom.cljc")
 (load-file "src/forge/brep/curves.cljc")
 (load-file "src/forge/brep/surfaces.cljc")
 (load-file "src/forge/brep/mesh.cljc")
@@ -4873,20 +5029,6 @@ A namespace for playing around with fns
       (rotate-points origin-angle-adjust-b)
       (rotate-points iso-euler-angles)))
 
-(defn svg-surface
-  ([surface seg] (svg-surface seg seg))
-  ([surface useg vseg]
-   (let [{:keys [pts quads]} (bmesh/surface surface useg vseg)
-         pts (vec (isometric-xf pts))
-         f (fn [face]
-             (let [pts (map #(get pts %) face)]
-               (when (= 4 (count (remove nil? pts)))
-                 (-> (map drop-last pts)
-                     el/polygon
-                     (tf/style {:fill "none"
-                                :stroke "black"})))))]
-     (el/g (remove nil? (map f quads))))))
-
 (defn svg-curve
   [curve seg]
   (let [pts (->> (bmesh/curve curve seg)
@@ -4898,6 +5040,69 @@ A namespace for playing around with fns
         (tf/style {:fill "none"
                    :stroke "slategray"
                    :stroke-width 0.5}))))
+
+(defn- svg-single-surface
+  [surface useg vseg]
+  (let [{:keys [pts quads]} (bmesh/surface surface useg vseg)
+        pts (mapv drop-last (vec (isometric-xf pts)))
+        f (fn [face]
+            (let [pts (remove nil? (map #(get pts %) face))
+                  normal (apply utils/normal (map utils/add-z (take 3 pts)))
+                  front-facing (when normal (pos? (last normal)))]
+              (when (and front-facing
+                         (= 4 (count pts)))
+                (el/polygon pts))))]
+    (remove nil? (map f quads))))
+
+(defn svg-surface
+  ([surface seg] (svg-surface seg seg))
+  ([surface useg vseg]
+   (let [surfaces (if (fn? surface) [surface] surface)]
+     (el/g (mapcat #(svg-single-surface % useg vseg) surfaces)))))
+
+(defn- quad-z
+  [pts quad]
+  (let [pts (map #(get pts %) quad)]
+    (utils/centroid-of-pts pts)))
+
+(defn svg-surface2
+  [{:keys [pts quads] :as mesh}]
+  (let [quads (reverse (sort-by #(quad-z pts %) quads))
+        pts (mapv drop-last (vec (isometric-xf pts)))
+        f (fn [face]
+            (let [pts (remove nil? (map #(get pts %) face))
+                  normal (apply utils/normal (map utils/add-z (take 3 pts)))
+                  front-facing (when normal (neg? (last normal)))]
+              (when (and front-facing
+                         (= 4 (count pts)))
+                (el/polygon pts))))]
+    (remove nil? (map f quads))))
+
+#+end_src
+
+** svg-surface3
+#+begin_src clojure
+(defn any-pts-inside?
+  [pg pts]
+  (let [pts (filter (set pg) pts)]
+    (geom/pt-inside? pg (utils/centroid-of-pts pg))
+    #_(some true? (filter #(geom/pt-inside? pg %) (take 2 pts)))))
+
+(defn svg-surface3
+  [{:keys [pts quads] :as mesh}]
+  (let [quads (reverse (sort-by #(quad-z pts %) quads))
+        pts (mapv drop-last (vec (isometric-xf pts)))
+        f (fn [face]
+            (let [pts (vec (remove nil? (map #(vec (get pts %)) face)))
+                  normal (apply utils/normal (map utils/add-z (take 3 pts)))
+                  front-facing (when normal (neg? (last normal)))]
+              (when true #_(and front-facing
+                         (= 4 (count pts)))
+                pts)))
+        front-faces (map reverse (remove nil? (mapv f quads)))
+        npts (set (apply concat front-faces))
+        overlaps (filter #(any-pts-inside? % npts) front-faces)]
+    (map #(el/polygon %) overlaps)))
 
 #+end_src
 
@@ -5030,16 +5235,11 @@ A namespace for playing around with fns
   (map (fn [face] (mapv #(+ shift %) face)) faces))
 
 (defn obj
-  ([surface seg] (obj surface seg seg))
-  ([surface useg vseg]
-   (let [surfaces (if (fn? surface) [surface] surface)
-         meshes (map #(bmesh/surface % useg vseg) surfaces)
-         pts (mapcat :pts meshes)
-         quads (mapcat #(apply shift-face-indices %) (map (juxt #(count (:quads %)) #(:quads %)) meshes))
-         entryfn (fn [prefix data] (str/join " " (concat [prefix] data)))
-         verts-str (str/join "\n" (map #(entryfn "v" %) pts))
-         faces-str (str/join "\n" (map #(entryfn "f" %) (map #(mapv inc %) quads)))]
-     quads #_(str/join "\n" [verts-str faces-str]))))
+  [{:keys [pts quads] :as mesh}]
+  (let [entryfn (fn [prefix data] (str/join " " (concat [prefix] data)))
+        verts-str (str/join "\n" (map #(entryfn "v" %) pts))
+        faces-str (str/join "\n" (map #(entryfn "f" %) (map #(mapv inc %) quads)))]
+    (str/join "\n" [verts-str faces-str])))
 
 ;; piecewise function of two lines, where the peak has value
 ;; out-t = 1 at peak-t
@@ -5053,25 +5253,207 @@ A namespace for playing around with fns
       (* (/ 1 peak-t) t)
       (+ (* (/ -1 (- 1 peak-t)) (- t peak-t)) 1))))
 
-(def slug
-  (let [p (bc/bezier [[0 0 600]
-                      [200 -100 400]
-                      [-300 250 200]
-                      [0 0 0]])
-        r 40
-        bump-t 0.55
-        sfn (fn [[ta tb]]
-              (let [rfn #(* (svg-clj.utils/ease-in-out-sin ((tri-t bump-t) %)) r)
-                    ca (-> (bc/circle (rfn ta))
-                           (bc/look-at (p ta) (bc/tangent p ta))
-                           (bc/translate (p ta)))
-                    cb (-> (bc/circle (rfn tb))
-                           (bc/look-at (p tb) (bc/tangent p tb))
-                           (bc/translate (p tb)))]
-                (bs/surface ca cb)))
-        surfaces (map sfn (partition 2 1 (range 0 1.01 0.01)))]
-    (mapcat #(drop 2 (svg-surface % 25 1)) surfaces)))
+(defn slug
+  [c r bump-t]
+  (let [xsfn #(-> (* (svg-clj.utils/ease-in-out-sin ((tri-t bump-t) %)) r)
+                  bc/circle
+                  bc/to-3D)]
+    (bs/extrude-fn-along xsfn c)))
 
+(defn slugs [n]
+  (let [h 775
+        ra 90
+        rb 350
+        a [0 0 h]
+        b [0 0 0]
+        ring-a (-> (bc/circle ra)
+                   bc/to-3D
+                   (bc/translate [0 0 (* 2 (/ h 3))]))
+        ring-b (-> (bc/circle rb)
+                   bc/to-3D
+                   (bc/translate [0 0 (* 1.8 (/ h 3))]))
+        mid-sphere (-> (bs/sphere 90) (bs/translate [0 0 (* h 0.5)]))
+        f (fn [] (-> (bc/bezier [a (ring-a (rand)) (ring-b (rand)) b])
+                     (slug (+ 7 (rand-int 25)) (+ 0.1 (rand 0.75)))))]
+    (repeatedly n f)))
+
+(def radial-slugs
+  (let [a (slug (bc/bezier [[0 0 875] [100 0 500] [400 0 250] [20 0 0]]) 25 0.7)]
+    (-> (map #(-> a
+                  (bs/translate [0 0 0])
+                  (bs/rotate [0 0 %])) (range 0 360 45))
+        (bmesh/surface 16 50)
+        bmesh/mesh-merge
+        svg-surface2
+        el/g
+        (tf/style {:fill "white" :stroke "black"}))))
+
+(def random-slugs
+  (let [s1 (slugs 1)
+        s3 (slugs 3)
+        s5 (slugs 5)
+        s7 (slugs 7)
+        gap 350]
+    (el/g
+     (-> (bmesh/surface s1 16 50)
+         bmesh/mesh-merge
+         svg-surface2
+         el/g
+         (tf/translate [0 0])
+         (tf/style {:fill "none" :stroke "black"}))
+     (-> (bmesh/surface s3 16 50)
+         bmesh/mesh-merge
+         svg-surface2
+         el/g
+         (tf/translate [gap 0])
+         (tf/style {:fill "none" :stroke "black"}))
+     (-> (bmesh/surface s5 16 50)
+         bmesh/mesh-merge
+         svg-surface2
+         el/g
+         (tf/translate [(* 2 gap) 0])
+         (tf/style {:fill "none" :stroke "black"}))
+     (-> (bmesh/surface s7 16 50)
+         bmesh/mesh-merge
+         svg-surface2
+         el/g
+         (tf/translate [(* 3 gap) 0])
+         (tf/style {:fill "none" :stroke "black"})))))
+
+(tools/cider-show random-slugs)
+
+(defn mesh->polyhedron
+  [{:keys [pts tris]}]
+  (mdl/polyhedron pts tris))
+
+(def scad-slugs
+  (let [shapes (slugs 9)]
+    (apply mdl/union 
+           (map #(-> (bmesh/surface % 16 50)
+                     mesh->polyhedron)
+                shapes))))
+
+(spit "forge.scad" (scad/write scad-slugs))
+
+#+end_src
+
+** 005
+#+begin_src clojure
+(def asdf
+  (let [a [20 30 40]
+        b [70 90 120]
+        base (bc/circle 40)
+        path (-> base
+                 bc/to-3D
+                 (bc/translate a)
+                 (bc/look-at b [0 1 0]))]
+    (mdl/group
+     (mdl/polyline [a b])
+     (mdl/polyline (map base (range 0 1.05 0.05)))
+     (mdl/polyline (map path (range 0 1.05 0.05))))))
+
+(def rev
+  (let [xs (bc/bezier [[0 0 0] [100 20 0] [0 100 0]])
+        path (-> (bc/circle 20) (bc/translate [50 0 0]))]
+    (-> (bs/revolve path [[20 30 40] [70 90 120]])
+        (bmesh/surface 20 20)
+        mesh->polyhedron
+        #_svg-surface2
+        #_el/g
+        #_(tf/translate [0 0 0])
+        #_(tf/style {:fill "white" :stroke "black"}))))
+
+#+end_src
+
+** extrude-along-scratch
+#+begin_src clojure
+(def axes
+  (el/g
+   (el/g (svg-surface2 (bmesh/surface (-> (bs/sphere 5) (bs/translate [0 0 0])) 5 5)))
+   (-> (bs/extrude-along (bc/circle 5) (bc/line [0.001 0.001 0.001] [300 0 0]))
+       (bmesh/surface 9 5)
+       svg-surface2
+       el/g
+       (tf/style {:fill "red" :stroke "none"}))
+   (-> (bs/extrude-along (bc/circle 5) (bc/line [0.001 0.001 0.001] [0 300 0]))
+       (bmesh/surface 9 5)
+       svg-surface2
+       el/g
+       (tf/style {:fill "green" :stroke "none"}))
+   (-> (bs/extrude-along (bc/circle 5) (bc/line [0.001 0.001 0.001] [0 0 300]))
+       (bmesh/surface 9 5)
+       svg-surface2
+       el/g
+       (tf/style {:fill "blue" :stroke "none"}))))
+
+(def a2
+  (let [[a b] [[0 0 0] [100 100 100]]]
+    (->
+     (el/g
+      (svg-surface2 (bmesh/surface (-> (bs/sphere 5) (bs/translate a)) 5 5))
+      (svg-surface2 (bmesh/surface (-> (bs/sphere 5) (bs/translate b)) 5 5))
+      (svg-surface2 (bmesh/surface
+                     (bs/extrude-along (bc/circle 27) (bc/line a b)) 20 10)))
+     (tf/style {:fill "white" :stroke "black"}))))
+
+(defn show-tangents
+  ([c seg] (show-tangents c seg (bs/find-up c)))
+  ([c seg up]
+   (let [step (double (/ 1 seg))
+         ts (range 0 1 step)
+         csfn (fn [t]
+                (let [a (c t)
+                      w (utils/normalize (bc/tangent c t))
+                      u (utils/normalize (utils/cross* up w))
+                      v (utils/normalize (utils/cross* w u))
+                      m [(vec (concat u [0]))
+                         (vec (concat v [0]))
+                         (vec (concat w [0]))
+                         (vec (concat a [1]))]
+                      m2 (utils/look-at-matrix a (bc/tangent c t) up)
+                      wpt (utils/v+ (utils/v* [15 15 15] w) a)
+                      upt (utils/v+ (utils/v* [15 15 15] u) a)
+                      vpt (utils/v+ (utils/v* [15 15 15] v) a)]
+                  (mdl/group
+                   (-> (mdl/line upt a) (mdl/color [255 0 0 1]))
+                   (-> (mdl/line vpt a) (mdl/color [0 255 0 1]))
+                   (-> (mdl/line wpt a) (mdl/color [0 0 255 1])))))]
+     (map csfn ts))))
+
+(defn bezier-loop
+  [pts]
+  (let [ba (bc/bezier pts)
+        cp1 ((apply bc/line (reverse (take 2 pts))) 2)
+        cp2 ((apply bc/line (take-last 2 pts)) 2)
+        bb (bc/bezier [(last pts) cp2 cp1 (first pts)])]
+    (bc/piecewise-curve [ba bb])))
+
+(defn tri-t
+  [peak-t]
+  (fn [t]
+    (if (< t peak-t)
+      (* (/ 1 peak-t) t)
+      (+ (* (/ -1 (- 1 peak-t)) (- t peak-t)) 1))))
+
+(def asdf
+  (let [path (bc/circle 200) #_(bezier-loop [[0 0 0]
+                           [300 0 0]
+                           [300 200 100]
+                           [0 200 0]])
+        xs (bezier-loop [[-20 -40 0]
+                         [20 -40 0]
+                         [20 40 0]
+                         [-20 40 0]])
+        r 100
+        xsfn #(-> (* (svg-clj.utils/ease-in-out-sin ((tri-t 0.5) %)) r)
+                  bc/circle
+                  bc/to-3D)
+        {:keys [pts quads] :as s} (-> (bs/extrude-fn-along xsfn path [0 0 1])
+                                (bmesh/surface 30 100))]
+    (svg-surface2 s) #_(mdl/group
+     #_(show-tangents path 30)
+     (-> (mdl/polyhedron pts quads)
+         (mdl/color [120 120 120 1])))))
 
 #+end_src
 
@@ -5180,5 +5562,37 @@ A namespace for playing around with fns
          (map #(clojure.string/join \tab %))
          (clojure.string/join \newline))
     (el/g (map #(-> (el/circle 1) (tf/translate (drop-last %))) (mapcat #(f 0.7 20 p1 %) (range 0 1 step))))))
- 
+#+end_src
+
+* polygon-intersection-scratch
+#+begin_src clojure
+(load-file "src/forge/utils.cljc")
+(load-file "src/forge/geom.cljc")
+
+(ns forge.scratch
+  (:require [clojure.string :as str]
+            [forge.utils :as utils]
+            [forge.geom :as geom]
+            [svg-clj.elements :as el]
+            [svg-clj.transforms :as tf]
+            [svg-clj.parametric :as p]
+            [svg-clj.layout :as lo]
+            [svg-clj.tools :as tools]))
+
+(def a (utils/regular-polygon-pts 120 4))
+(def b (map #(utils/v+ % [60 4]) a))
+
+(def asdf
+  (let [a-b (geom/polygon-difference a b)
+        #_#_a+b (geom/polygon-union a b)]
+    (el/g
+     (-> (el/polygon a)
+         (tf/style {:fill "none" :stroke "green"}))
+     (-> (el/polygon b)
+         (tf/style {:fill "none" :stroke "green"}))
+     (-> (el/polygon a-b)
+         (tf/style {:fill "limegreen" :stroke "red"})))))
+
+(tools/cider-show asdf)
+
 #+end_src

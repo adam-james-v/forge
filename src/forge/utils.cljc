@@ -37,6 +37,11 @@
         false? 
         (map zeroish? diffs))))))
 
+(defn my-zeroish?
+  [x]
+  (let [eps 0.00001]
+    (< (Math/abs x) eps)))
+
 (def v+ (partial mapv +))
 (def v- (partial mapv -))
 (def v* (partial mapv *))
@@ -201,7 +206,7 @@
          ab (v- a b)
          ac (v- a c)
          [x y z] (cross* (add-z ab) (add-z ac))]
-     (when (or (> x eps) (> y eps) (> z eps))
+     (when (or (> (abs x) eps) (> (abs y) eps) (> (abs z) eps))
        [x y z]))))
 
 (defn normalize
@@ -483,6 +488,219 @@ Put another way, the angle is measured following the 'right hand rule' around p2
      (or (<= (cross*-k ab apt) 0)
          (<= (cross*-k bc bpt) 0)
          (<= (cross*-k ca cpt) 0)))))
+
+(defn pt-on-perimeter?
+  [[a b c] pt]
+  (some true? (map #(on-line? pt %) (partition 2 1 [a b c a]))))
+
+(defn axis-angle
+  [va vb]
+  (let [angle (-> (dot* (normalize va) (normalize vb))
+                  Math/acos
+                  to-deg)
+        axis (normalize (cross* va vb))]
+    [axis angle]))
+
+(defn axis-angle->euler
+  [axis angle]
+  (let [eps 0.00001
+        angle (to-rad angle)
+        ah (/ angle 2.0)
+        [x y z] (normalize axis)]
+    (cond
+      (and (pos? z) (< (abs (- 1 z)) eps)) ;; points up
+      (mapv to-deg
+            [0
+             (/ Math/PI 2)
+             (* 2 (Math/atan2 (* x (Math/sin ah)) (Math/cos ah)))])
+      
+      (and (neg? z) (< (abs (- 1 z)) eps)) ;; points down
+      (mapv to-deg
+            [0
+             (/ Math/PI -2)
+             (* -2 (Math/atan2 (* x (Math/sin ah)) (Math/cos ah)))])
+      
+      :else
+      (mapv to-deg
+            [(Math/atan2
+              (- (* x (Math/sin angle)) (* y z (- 1 (Math/cos angle))))
+              (- 1 (* (+ (* x x) (* z z)) (- 1 (Math/cos angle)))))
+             (Math/asin (+ (* x y (- 1 (Math/cos angle))) (* z (Math/sin angle))))
+             (Math/atan2
+              (- (* y (Math/sin angle)) (* x z (- 1 (Math/cos angle))))
+              (- 1 (* (+ (* y y) (* z z)) (- 1 (Math/cos angle)))))]))))
+
+(defn axis-angle->quaternion
+  [axis angle]
+  (let [[ax ay az] (normalize axis)
+        ha (/ (to-rad angle) 2.0)
+        qx (* ax (Math/sin ha))
+        qy (* ay (Math/sin ha))
+        qz (* az (Math/sin ha))
+        qw (Math/cos ha)]
+    (normalize [qx qy qz qw])))
+
+;; heading = Z
+;; attitude = Y
+;; bank = X
+;; my own convention, probably should change and/or document it better
+;; ZYX is application order, but vector returns [ax ay az] which is fed into (rotate ...)
+
+(defn quaternion->euler
+  [[qx qy qz qw]]
+  (let [eps 0.00001
+        pole (+ (* qx qy) (* qz qw))]
+    (cond
+      (< (abs (- pole 0.5)) eps) ;; pole close to 0.5 is N
+      (mapv to-deg
+            [0
+             (/ Math/PI 2)
+             (* 2 (Math/atan2 qx qw))])
+
+      (< (abs (+ pole 0.5)) eps) ;; pole close to -0.5 is S
+      (mapv to-deg
+            [0
+             (/ Math/PI -2)
+             (* -2 (Math/atan2 qx qw))])
+
+      :else
+      (mapv to-deg
+            [(Math/atan2 (- (* 2 qx qw) (* 2 qy qz)) (- 1 (* 2 qx qx) (* 2 qz qz)))
+             (Math/asin (+ (* 2 qx qy) (* 2 qz qw)))
+             (Math/atan2 (- (* 2 qy qw) (* 2 qx qz)) (- 1 (* 2 qy qy) (* 2 qz qz)))]))))
+
+(defn euler
+  [va vb]
+  (->> (axis-angle va vb)
+       (apply axis-angle->quaternion)
+       quaternion->euler))
+
+;; http://www.euclideanspace.com/maths/geometry/rotations/conversions/quaternionToAngle/index.htm
+(defn quaternion->axis-angle
+  [q]
+  (let [eps 0.00001
+        [qx qy qz qw] (normalize q)
+        angle (to-deg (* 2 (Math/acos qw)))
+        s (Math/sqrt (- 1 (* qw qw)))]
+    (if (< s eps)
+      #_[[qx qy qz] angle] [[1 0 0] angle]
+      [[(/ qx s) (/ qy s) (/ qz s)] angle])))
+
+(defn rotate-pt-aa
+  [pt axis angle]
+  (let [angle (to-rad angle)
+        axis (normalize axis)
+        d (v* (repeat 3 (dot* axis pt)) axis)
+        r (v- pt d)
+        rp (v+ (v* r (repeat 3 (Math/cos angle)))
+                     (v* (cross* axis r) (repeat 3 (Math/sin angle))))]
+    (v+ d rp)))
+
+;; https://stackoverflow.com/a/52551983
+(defn look-at-quaternion
+  [from to world-up]
+  (let [world-up (normalize world-up)
+        [fx fy fz :as forward] (normalize (v- from to))
+        [rx ry rz :as right] (normalize (cross* world-up forward))
+        [ux uy uz :as up] (cross* forward right)
+        trace (+ rx uy fz)]
+    (cond
+      (> trace 0)
+      (let [s (/ 0.5 (Math/sqrt (+ trace 1.0)))
+            x (* (- uz fy) s)
+            y (* (- fx rz) s)
+            z (* (- ry ux) s)
+            w (/ 0.25 s)]
+        [x y z w])
+
+      (and (> rx uy) (> rx fz))
+      (let [s (* 2 (Math/sqrt (+ 1 rx (- uy) (- fz))))
+            x (* 0.25 s)
+            y (/ (+ ux ry) s)
+            z (/ (+ fx rz) s)
+            w (/ (- uz fy) s)]
+        [x y z w])
+
+      (> uy fz)
+      (let [s (* 2 (Math/sqrt (+ 1 uy (- rx) (- fz))))
+            x (/ (+ ux ry) s)
+            y (* 0.25 s)
+            z (/ (+ fy uz) s)
+            w (/ (- fx rz) s)]
+        [x y z w])
+
+      :else
+      (let [s (* 2 (Math/sqrt (+ 1 fz (- rx) (- uy))))
+            x (/ (+ fx rz) s)
+            y (/ (+ fy uz) s)
+            z (* 0.25 s)
+            w (/ (- ry ux) s)]
+        [x y z w]))))
+
+(defn transform-pt-quaternion
+  [[px py pz] [x y z w]]
+  [(+ (* w w px) (* 2 y w pz) (* -2 z w py) (* x x px)
+      (* 2 y x py) (* 2 z x pz) (* -1 z z px) (* -1 y y px))
+
+   (+ (* 2 x y px) (* y y py) (* 2 z y pz) (* 2 w z px)
+      (* -1 z z py) (* w w py) (* -2 x w pz) (* -1 x x py))
+
+   (+ (* 2 x z px) (* 2 y z py) (* z z pz) (* -2 w y px)
+      (* -1 y y pz) (* 2 w x py) (* x x pz) (* w w pz))])
+
+(defn axis-angle->quaternion
+  [axis angle]
+  (let [[ax ay az] (normalize axis)
+        ha (/ (to-rad angle) 2.0)
+        qx (* ax (Math/sin ha))
+        qy (* ay (Math/sin ha))
+        qz (* az (Math/sin ha))
+        qw (Math/cos ha)]
+    (normalize [qx qy qz qw])))
+
+;; http://www.euclideanspace.com/maths/algebra/vectors/lookat/index.htm
+(defn look-at-axis-angle
+  [pt eye current target world-up]
+  (let [world-up (normalize world-up)
+        ncurrent (normalize (v- current eye))
+        ntarget  (normalize (v- target eye))
+        axis (cross* ncurrent ntarget)
+        a1 (to-deg (dot* ncurrent ntarget))
+        [a b c] target
+        axis2 [(* (- a) b) (+ (* a a) (* c c)) (* (- c) b)]
+        a2 (to-deg (Math/acos (dot* world-up axis2)))
+        q1 (axis-angle->quaternion axis a1)
+        q2 (axis-angle->quaternion axis2 a2)]
+    (-> pt
+        (transform-pt-quaternion q2)
+        (transform-pt-quaternion q1))))
+
+(defn- grc
+  [m [r c]]
+  (get-in m [c r]))
+
+(defn transform-pt-matrix
+  [pt m]
+  (let [eps 0.00001
+        [px py pz] pt
+        x (+ (* px (grc m [0 0])) (* py (grc m [0 1])) (* pz (grc m [0 2])) (grc m [0 3]))
+        y (+ (* px (grc m [1 0])) (* py (grc m [1 1])) (* pz (grc m [1 2])) (grc m [1 3]))
+        z (+ (* px (grc m [2 0])) (* py (grc m [2 1])) (* pz (grc m [2 2])) (grc m [2 3]))
+        w (+ (* px (grc m [3 0])) (* py (grc m [3 1])) (* pz (grc m [3 2])) (grc m [3 3]))]
+    (if (and (not (zeroish? (- w 1)))
+             (not (zeroish? w)))
+      [(double (/ x w)) (double (/ y w)) (double (/ z w))]
+      [x y z])))
+
+(defn look-at-matrix
+  [from to world-up]
+  (let [w (normalize to)
+        u (normalize (cross* world-up w))
+        v (normalize (cross* w u))]
+    (mapv vec [(concat u [0])
+               (concat v [0])
+               (concat w [0])
+               (concat from [1])])))
 
 (defn ext
   [fname]

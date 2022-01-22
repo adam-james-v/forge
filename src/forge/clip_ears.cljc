@@ -17,7 +17,7 @@
         corners (->> pts
                      (#(concat % (take 2 %)))
                      (partition 3 1)
-                     (filter #(#{:convex} (apply utils/corner-condition %))))
+                     #_(filter #(#{:convex} (apply utils/corner-condition %))))
         clear? (fn [corner]
                  (not (seq (filter #(utils/pt-inside? corner %) pts))))
         tri (first (filter clear? corners))]

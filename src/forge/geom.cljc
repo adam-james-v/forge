@@ -36,7 +36,7 @@
       (let [d [(utils/determinant a b) (utils/determinant c d)]
             x (/ (utils/determinant d xdiff) div)
             y (/ (utils/determinant d ydiff) div)]
-        [x y]))))
+        (mapv double [x y])))))
 
 (defn line-segment-intersection
   [[a b] [c d]]
@@ -151,85 +151,60 @@
        (mapv first sorted)
        (recur lines next (conj sorted next))))))
 
-(defn- pt-inside?
+(defn pt-inside?
   [pg pt]
   (let [tris (:tris (clip-ears/triangulate pg))]
-    (= #{true false}
-       (set (map #(utils/pt-inside? % pt) tris)))))
+    (some true? (concat
+                 (map #(utils/pt-on-perimeter? % pt) tris)
+                 (map #(utils/pt-inside? % pt) tris)))))
+
+(defn overlap?
+  [pga pgb]
+  (some true? (map #(pt-inside? pga %) pgb)))
+
+(defn polygon-difference
+  [pga pgb]
+  (when (overlap? pga pgb)
+    (let [in-b (filter #(pt-inside? pgb %) pga)
+          in-a (filter #(pt-inside? pga %) pgb)
+          rem-a (->> pga
+                     (partition-by (set in-b))
+                     (remove #((set in-b) (first %)))
+                     reverse
+                     (apply concat))
+          rem-b (->> pgb
+                     (partition-by (set in-a))
+                     (remove #((set in-a) (first %)))
+                     reverse
+                     (apply concat))
+          crossing-1 [[(last rem-a) (first in-b)]
+                      [(last in-a) (first rem-b)]]
+          crossing-2 [[(first rem-a) (last in-b)]
+                      [(first in-a) (last rem-b)]]
+          [i1 i2] (map #(apply line-segment-intersection %) [crossing-1 crossing-2])]
+      (concat rem-a [i1] (reverse in-a) [i2]))))
 
 (defn polygon-union
   [pga pgb]
-  (let [xs (polygon-intersection pga pgb)
-        ;; trim lines at intersection points
-        ls (apply concat 
-                  (for [l (mapcat utils/edges [pga pgb])]
-                    (let [trims (->> #_(map #(trim-at-pts l [%]) xs)
-                                     [(trim-at-pts l xs)]
-                                     #_(filter #(not (nil? %))))]
-                      (if (> (count trims) 0)
-                        (apply concat trims)
-                        [l]))))
-        ;; remove degenerate lines (= pta ptb)
-        ls (filter #(not (= (first %) (second %))) ls)
-        ;; get lines that are not in polygon a
-        a (filter #(not (pt-inside? pga (utils/centroid-of-pts %))) ls)
-        ;; get lines that are not in polygon b
-        b (filter #(not (pt-inside? pgb (utils/centroid-of-pts %))) ls)
-        ;; get lines with midpoints on both perimeters
-        c (filter #(and (on-perimeter? pga (utils/centroid-of-pts %))
-                        (on-perimeter? pgb (utils/centroid-of-pts %))) ls)]
-    a #_(->> (concat a b c)
-         (remove nil?)
-         distinct
-         #_(order-lines))))
-
-#_(let [col #(first (shuffle ["blue" "red" "green" "white" "limegreen" "skyblue" "slategray" "gray"
-                            "cyan" "yellow" "magenta" "pink" "hotpink" "black"]))
-      pga (utils/regular-polygon-pts 120 8)
-      pgb (map #(utils/v+ % [70.0 71.0]) (utils/regular-polygon-pts 120 8))
-      pgc (polygon-union pga pgb)
-      xs (polygon-intersection pga pgb)]
-  (svg-clj.tools/cider-show
-   (svg-clj.elements/g
-    (when (< 0 (count xs))
-      (map #(-> (svg-clj.elements/circle 3)
-                (svg-clj.transforms/translate %)
-                (svg-clj.transforms/style {:fill "limegreen"})) xs))
-    (-> (svg-clj.elements/polygon pga)
-        (svg-clj.transforms/style {:fill "none" :stroke "blue"}))
-    (-> (svg-clj.elements/polygon pgb)
-        (svg-clj.transforms/style {:fill "none" :stroke "blue"}))
-    #_(-> (svg-clj.elements/polygon (apply concat pgc))
-        (svg-clj.transforms/style {:fill "none" :stroke "red"}))
-    (map #(-> (apply svg-clj.elements/line %)
-              (svg-clj.transforms/style {:stroke (col) #_"limegreen"})) pgc))))
-
-(defn polygon-difference
-  "Polygon B Cuts Polygon A"
-  [pga pgb]
-  (let [xs (polygon-intersection pga pgb)
-        ;; trim lines at intersection points
-        ls (apply concat 
-                  (for [l (mapv vec (mapcat utils/edges [pga pgb]))]
-                    (let [trims (->> #_(map #(trim-at-pts l [%]) xs)
-                                     [(trim-at-pts l xs)]
-                                     (filter #(not (nil? %))))]
-                      (if (> (count trims) 0)
-                        (apply concat trims)
-                        [l]))))
-        ;; remove degenerate lines (= pta ptb)
-        ls (filter #(not (= (first %) (second %))) ls)
-        ;; get lines that are in polygon a
-        a (filter #(pt-inside? pga (utils/centroid-of-pts %)) ls)
-        ;; get lines that are in polygon b
-        b (filter #(pt-inside? pgb (utils/centroid-of-pts %)) ls)
-        ;; get lines with midpoints on both perimeters
-        c (filter #(and (on-perimeter? pga (utils/centroid-of-pts %))
-                        (on-perimeter? pgb (utils/centroid-of-pts %))) ls)]
-    (->> (concat a b c)
-         (remove nil?)
-         (into #{})
-         (order-lines))))
+  (when (overlap? pga pgb)
+    (let [in-b (filter #(pt-inside? pgb %) pga)
+          in-a (filter #(pt-inside? pga %) pgb)
+          rem-a (->> pga
+                     (partition-by (set in-b))
+                     (remove #((set in-b) (first %)))
+                     reverse
+                     (apply concat))
+          rem-b (->> pgb
+                     (partition-by (set in-a))
+                     (remove #((set in-a) (first %)))
+                     reverse
+                     (apply concat))
+          crossing-1 [[(last rem-a) (first in-b)]
+                      [(last in-a) (first rem-b)]]
+          crossing-2 [[(first rem-a) (last in-b)]
+                      [(first in-a) (last rem-b)]]
+          [i1 i2] (map #(apply line-segment-intersection %) [crossing-1 crossing-2])]
+      (concat rem-a [i1] rem-b [i2]))))
 
 (defn offset-edge
   [[a b] d]

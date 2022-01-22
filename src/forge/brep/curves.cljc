@@ -58,7 +58,7 @@
         b (curve (+ t eps))
         a (if a a (curve 0))
         b (if b b (curve 1))]
-    (-> (utils/v- a b)
+    (-> (utils/v- b a)
         (utils/normalize))))
 
 (defn normal
@@ -111,7 +111,7 @@
     (fn
       ([] {:fn `polyline
            :input [pts]
-           :origin (utils/centroid-of-pts pts)
+           :origin [0 0 0] #_(utils/centroid-of-pts pts)
            :vertex-params (concat [0] (mapv second intervals))
            :dimension (count (first pts))
            :length length})
@@ -139,7 +139,7 @@
     (fn
       ([] {:fn `polygon
            :input [pts]
-           :origin (utils/centroid-of-pts pts)
+           :origin [0 0 0] #_(utils/centroid-of-pts pts)
            :vertex-params (concat [0] (mapv second intervals))
            :dimension (count (first pts))
            :length (reduce + (map #(:length (%)) lines))})
@@ -447,59 +447,7 @@
        ([] (merge data {:fn `cut-at-lp :input [curve l-start l-end]}))
        ([t] (curve (+ (* t sc) t-start)))))))
 
-;; https://stackoverflow.com/a/52551983
-(defn look-at-quaternion
-  [from to world-up]
-  (let [world-up (utils/normalize world-up)
-        [fx fy fz :as forward] (utils/normalize (utils/v- from to))
-        [rx ry rz :as right] (utils/normalize (utils/cross* world-up forward))
-        [ux uy uz :as up] (utils/cross* forward right)
-        trace (+ rx uy fz)]
-    (cond
-      (> trace 0)
-      (let [s (/ 0.5 (Math/sqrt (+ trace 1.0)))
-            x (* (- uz fy) s)
-            y (* (- fx rz) s)
-            z (* (- ry ux) s)
-            w (/ 0.25 s)]
-        [x y z w])
-
-      (and (> rx uy) (> rx fz))
-      (let [s (* 2 (Math/sqrt (+ 1 rx (- uy) (- fz))))
-            x (* 0.25 s)
-            y (/ (+ ux ry) s)
-            z (/ (+ fx rz) s)
-            w (/ (- uz fy) s)]
-        [x y z w])
-
-      (> uy fz)
-      (let [s (* 2 (Math/sqrt (+ 1 uy (- rx) (- fz))))
-            x (/ (+ ux ry) s)
-            y (* 0.25 s)
-            z (/ (+ fy uz) s)
-            w (/ (- fx rz) s)]
-        [x y z w])
-
-      :else
-      (let [s (* 2 (Math/sqrt (+ 1 fz (- rx) (- uy))))
-            x (/ (+ fx rz) s)
-            y (/ (+ fy uz) s)
-            z (* 0.25 s)
-            w (/ (- ry ux) s)]
-        [x y z w]))))
-
-(defn transform-pt-quaternion
-  [[px py pz] [x y z w]]
-  [(+ (* w w px) (* 2 y w pz) (* -2 z w py) (* x x px)
-      (* 2 y x py) (* 2 z x pz) (* -1 z z px) (* -1 y y px))
-
-   (+ (* 2 x y px) (* y y py) (* 2 z y pz) (* 2 w z px)
-      (* -1 z z py) (* w w py) (* -2 x w pz) (* -1 x x py))
-
-   (+ (* 2 x z px) (* 2 y z py) (* z z pz) (* -2 w y px)
-      (* -1 y y pz) (* 2 w x py) (* x x pz) (* w w pz))])
-
-(defn look-at
+#_(defn look-at
   [f [px py pz] [ux uy uz]]
   (let [data (f)
         ctr (utils/add-z (:origin data))
@@ -513,3 +461,51 @@
        (-> (f t)
            utils/add-z
            (transform-pt-quaternion (look-at-quaternion ctr [px py pz] [ux uy uz])))))))
+
+(defn- aligned?
+  [[ax ay az] [bx by bz]]
+  (and (utils/my-zeroish? (Math/abs (- ax bx)))
+       (utils/my-zeroish? (Math/abs (- ay by)))
+       (utils/my-zeroish? (Math/abs (- az bz)))))
+
+(defn find-up
+  [c]
+  (let [data (c)
+        [a b c :as pts] (map c [0 0.333 0.667])
+        is-line (utils/on-line-inf? a [b c])
+        v1 (utils/normalize (utils/v- b a))]
+    (cond
+      (= (:dimension data) 2)
+      [0 0 1]
+
+      (not is-line)
+      (-> (apply utils/normal pts)
+          utils/normalize)
+
+      (and is-line (aligned? v1 [0 0 1]))
+      [0 1 0]
+      
+      :else
+      [0 0 1])))
+
+(defn look-at
+  ([c target] (look-at c target (find-up c)))
+  ([c target up]
+   (let [data (c)
+        ctr (utils/add-z (:origin data))
+        dim 3]
+    (fn
+      ([] (merge data
+                 {:fn `look-at
+                  :input [c target up]
+                  :origin ctr
+                  :dimension dim}))
+      ([t]
+       (if (utils/colinear? (utils/normalize up) ctr target)
+         (c t)
+         (let [m (utils/look-at-matrix [0 0 0] (utils/v- target ctr) up)]
+         (-> (c t)
+             utils/add-z
+             (utils/v- ctr)
+             (utils/transform-pt-matrix m)
+             (utils/v+ ctr)))))))))

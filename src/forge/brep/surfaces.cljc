@@ -191,6 +191,19 @@
        (let [rad (c/line ctr (perim u))]
          (rad v))))))
 
+(defn sphere
+  [r]
+  (fn
+    ([] {:fn `sphere
+         :input [r]
+         :origin [0 0 0]})
+    ([u v]
+     (let [[u v] (map #(* 2 Math/PI %) [u v])
+           x (* r (Math/sin u) (Math/cos v))
+           y (* r (Math/sin u) (Math/sin v))
+           z (* r (Math/cos u))]
+       [x y z]))))
+
 (defn translate
   [f [x y z]]
   (let [data (f)]
@@ -215,183 +228,12 @@
                   :dimension dim}))
       ([u v]
        (-> (f u v)
-           (utils/v+ (map - ctr))
+           #_(utils/v+ (map - ctr))
            (utils/rotate-pt [ax ay az])
-           (utils/v+ ctr))))))
-
-;; https://stackoverflow.com/a/52551983
-(defn- look-at-quaternion
-  [from to world-up]
-  (let [world-up (utils/normalize world-up)
-        [fx fy fz :as forward] (utils/normalize (utils/v- from to))
-        [rx ry rz :as right] (utils/normalize (utils/cross* world-up forward))
-        [ux uy uz :as up] (utils/cross* forward right)
-        trace (+ rx uy fz)]
-    (cond
-      (> trace 0)
-      (let [s (/ 0.5 (Math/sqrt (+ trace 1.0)))
-            x (* (- uz fy) s)
-            y (* (- fx rz) s)
-            z (* (- ry ux) s)
-            w (/ 0.25 s)]
-        [x y z w])
-
-      (and (> rx uy) (> rx fz))
-      (let [s (* 2 (Math/sqrt (+ 1 rx (- uy) (- fz))))
-            x (* 0.25 s)
-            y (/ (+ ux ry) s)
-            z (/ (+ fx rz) s)
-            w (/ (- uz fy) s)]
-        [x y z w])
-
-      (> uy fz)
-      (let [s (* 2 (Math/sqrt (+ 1 uy (- rx) (- fz))))
-            x (/ (+ ux ry) s)
-            y (* 0.25 s)
-            z (/ (+ fy uz) s)
-            w (/ (- fx rz) s)]
-        [x y z w])
-
-      :else
-      (let [s (* 2 (Math/sqrt (+ 1 fz (- rx) (- uy))))
-            x (/ (+ fx rz) s)
-            y (/ (+ fy uz) s)
-            z (* 0.25 s)
-            w (/ (- ry ux) s)]
-        [x y z w]))))
-
-(defn transform-pt-quaternion
-  [[px py pz] [x y z w]]
-  [(+ (* w w px) (* 2 y w pz) (* -2 z w py) (* x x px)
-      (* 2 y x py) (* 2 z x pz) (* -1 z z px) (* -1 y y px))
-
-   (+ (* 2 x y px) (* y y py) (* 2 z y pz) (* 2 w z px)
-      (* -1 z z py) (* w w py) (* -2 x w pz) (* -1 x x py))
-
-   (+ (* 2 x z px) (* 2 y z py) (* z z pz) (* -2 w y px)
-      (* -1 y y pz) (* 2 w x py) (* x x pz) (* w w pz))])
-
-
-(defn look-at
-  [f [px py pz] [ux uy uz]]
-  (let [data (f)
-        ctr (utils/add-z (:origin data))
-        dim 3]
-    (fn
-      ([] (merge data
-                 {:fn `look-at
-                  :input [f [px py pz] [ux uy uz]]
-                  :dimension dim}))
-      ([u v]
-       (-> (f u v)
-           utils/add-z
-           (transform-pt-quaternion (look-at-quaternion ctr [px py pz] [ux uy uz])))))))
-
-(defn axis-angle
-  [va vb]
-  (let [angle (-> (utils/dot* (utils/normalize va) (utils/normalize vb))
-                  Math/acos
-                  utils/to-deg)
-        axis (utils/normalize (utils/cross* va vb))]
-    [axis angle]))
-
-(defn axis-angle->euler
-  [axis angle]
-  (let [eps 0.00001
-        angle (utils/to-rad angle)
-        ah (/ angle 2.0)
-        [x y z] (utils/normalize axis)]
-    (cond
-      (and (pos? z) (< (utils/abs (- 1 z)) eps)) ;; points up
-      (mapv utils/to-deg
-            [0
-             (/ Math/PI 2)
-             (* 2 (Math/atan2 (* x (Math/sin ah)) (Math/cos ah)))])
-      
-      (and (neg? z) (< (utils/abs (- 1 z)) eps)) ;; points down
-      (mapv utils/to-deg
-            [0
-             (/ Math/PI -2)
-             (* -2 (Math/atan2 (* x (Math/sin ah)) (Math/cos ah)))])
-      
-      :else
-      (mapv utils/to-deg
-            [(Math/atan2
-              (- (* x (Math/sin angle)) (* y z (- 1 (Math/cos angle))))
-              (- 1 (* (+ (* x x) (* z z)) (- 1 (Math/cos angle)))))
-             (Math/asin (+ (* x y (- 1 (Math/cos angle))) (* z (Math/sin angle))))
-             (Math/atan2
-              (- (* y (Math/sin angle)) (* x z (- 1 (Math/cos angle))))
-              (- 1 (* (+ (* y y) (* z z)) (- 1 (Math/cos angle)))))]))))
-
-(defn axis-angle->quaternion
-  [axis angle]
-  (let [[ax ay az] (utils/normalize axis)
-        ha (/ (utils/to-rad angle) 2.0)
-        qx (* ax (Math/sin ha))
-        qy (* ay (Math/sin ha))
-        qz (* az (Math/sin ha))
-        qw (Math/cos ha)]
-    (utils/normalize [qx qy qz qw])))
-
-;; heading = Z
-;; attitude = Y
-;; bank = X
-;; my own convention, probably should change and/or document it better
-;; ZYX is application order, but vector returns [ax ay az] which is fed into (rotate ...)
-
-(defn quaternion->euler
-  [[qx qy qz qw]]
-  (let [eps 0.00001
-        pole (+ (* qx qy) (* qz qw))]
-    (cond
-      (< (utils/abs (- pole 0.5)) eps) ;; pole close to 0.5 is N
-      (mapv utils/to-deg
-            [0
-             (/ Math/PI 2)
-             (* 2 (Math/atan2 qx qw))])
-
-      (< (utils/abs (+ pole 0.5)) eps) ;; pole close to -0.5 is S
-      (mapv utils/to-deg
-            [0
-             (/ Math/PI -2)
-             (* -2 (Math/atan2 qx qw))])
-
-      :else
-      (mapv utils/to-deg
-            [(Math/atan2 (- (* 2 qx qw) (* 2 qy qz)) (- 1 (* 2 qx qx) (* 2 qz qz)))
-             (Math/asin (+ (* 2 qx qy) (* 2 qz qw)))
-             (Math/atan2 (- (* 2 qy qw) (* 2 qx qz)) (- 1 (* 2 qy qy) (* 2 qz qz)))]))))
-
-(defn euler
-  [va vb]
-  (->> (axis-angle va vb)
-       (apply axis-angle->quaternion)
-       quaternion->euler))
-
-;; http://www.euclideanspace.com/maths/geometry/rotations/conversions/quaternionToAngle/index.htm
-(defn quaternion->axis-angle
-  [q]
-  (let [eps 0.00001
-        [qx qy qz qw] (utils/normalize q)
-        angle (utils/to-deg (* 2 (Math/acos qw)))
-        s (Math/sqrt (- 1 (* qw qw)))]
-    (if (< s eps)
-      #_[[qx qy qz] angle] [[1 0 0] angle]
-      [[(/ qx s) (/ qy s) (/ qz s)] angle])))
-
-(defn rotate-pt-aa
-  [pt axis angle]
-  (let [angle (utils/to-rad angle)
-        axis (utils/normalize axis)
-        d (utils/v* (repeat 3 (utils/dot* axis pt)) axis)
-        r (utils/v- pt d)
-        rp (utils/v+ (utils/v* r (repeat 3 (Math/cos angle)))
-                     (utils/v* (utils/cross* axis r) (repeat 3 (Math/sin angle))))]
-    (utils/v+ d rp)))
+           #_(utils/v+ ctr))))))
 
 (defn extrude-along
-  ([xs path] (extrude-along xs path [0 0 1]))
+  ([xs path] (extrude-along xs path (c/find-up path)))
   ([xs path up]
    (let [xs (c/to-3D xs)
          path (c/to-3D path)
@@ -400,18 +242,76 @@
      (fn
        ([] {:fn `extrude-along
             :input [xs path up]
-            :origin origin})
+            :origin origin
+            :dimension 3})
        ([u v]
-        (let [pt (utils/add-z (xs v))
-              path-pt (utils/add-z (path u))
-              path-tangent (c/tangent path u)
-              path-normal (c/normal path u up)
-              xs-normal [0 0 1]
-              q (look-at xs-normal path-tangent path-normal)
-              xpt (-> pt
-                      (transform-pt-quaternion q)
-                      (utils/v+ path-pt))]
-          xpt))))))
+        (let [path-tangent (c/tangent path v)
+              m (utils/look-at-matrix (path v) path-tangent up)]
+          (-> (xs u)
+              (utils/transform-pt-matrix m))))))))
+
+(defn extrude-fn-along
+  ([xsfn path] (extrude-fn-along xsfn path (c/find-up path)))
+  ([xsfn path up]
+   (let [path (c/to-3D path)
+         data (path)
+         origin (:origin data)]
+     (fn
+       ([] {:fn `extrude-fn-along
+            :input [xsfn path up]
+            :origin origin
+            :dimension 3})
+       ([u v]
+        (let [xs (xsfn v)
+              path-tangent (c/tangent path v)
+              m (utils/look-at-matrix (path v) path-tangent up)]
+          (-> (xs u)
+              (utils/transform-pt-matrix m))))))))
+
+#_(defn revolve
+  ([xs] (revolve xs [[0 0 0] [0 0 1]]))
+  ([xs [a b :as axis]]
+   (let [up (utils/v- b a)
+         path (-> (c/circle 2)
+                  c/to-3D
+                  (c/translate a)
+                  (c/look-at b up))
+         xs (c/to-3D xs)
+         data (path)
+         origin (:origin data)
+         nup (c/find-up path)]
+     (fn
+       ([] {:fn `revolve
+            :input [xs axis]
+            :origin origin
+            :dimension 3})
+       ([u v]
+        (let [path-tangent (c/tangent path v)
+              m (utils/look-at-matrix (path v) path-tangent nup)]
+          (-> (xs u)
+              (utils/transform-pt-matrix m)
+              (utils/v- (path v)))))))))
+
+(defn revolve
+  ([xs] (revolve xs [[0 0 0] [0 0 1]]))
+  ([xs [a b :as axis]]
+   (let [up (utils/v- b a)
+         xs (-> xs
+                c/to-3D
+                #_(c/rotate [0 90 0])
+                (c/translate a)
+                (c/look-at b up))
+         data (xs)
+         origin (:origin data)]
+     (fn
+       ([] {:fn `revolve
+            :input [xs axis]
+            :origin origin
+            :dimension 3})
+       ([u v]
+        (let [angle (* v 360)]
+          (-> (xs u)
+              (utils/rotate-pt-aa (utils/v- b a) angle))))))))
 
 (defn scale
   [f [sx sy sz]]
