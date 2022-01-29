@@ -1377,7 +1377,7 @@ For consideration:
 
 (defn polygon-difference
   [pga pgb]
-  (when (overlap? pga pgb)
+  (if (overlap? pga pgb)
     (let [in-b (filter #(pt-inside? pgb %) pga)
           in-a (filter #(pt-inside? pga %) pgb)
           rem-a (->> pga
@@ -1395,7 +1395,8 @@ For consideration:
           crossing-2 [[(first rem-a) (last in-b)]
                       [(first in-a) (last rem-b)]]
           [i1 i2] (map #(apply line-segment-intersection %) [crossing-1 crossing-2])]
-      (concat rem-a [i1] (reverse in-a) [i2]))))
+      (concat rem-a [i1] (reverse in-a) [i2]))
+    pga))
 
 (defn polygon-union
   [pga pgb]
@@ -5580,7 +5581,7 @@ A namespace for playing around with fns
             [svg-clj.tools :as tools]))
 
 (def a (utils/regular-polygon-pts 120 4))
-(def b (map #(utils/v+ % [60 4]) a))
+(def b (map #(utils/v+ % [245 0]) a))
 
 (def asdf
   (let [a-b (geom/polygon-difference a b)

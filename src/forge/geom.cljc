@@ -164,7 +164,7 @@
 
 (defn polygon-difference
   [pga pgb]
-  (when (overlap? pga pgb)
+  (if (overlap? pga pgb)
     (let [in-b (filter #(pt-inside? pgb %) pga)
           in-a (filter #(pt-inside? pga %) pgb)
           rem-a (->> pga
@@ -182,7 +182,8 @@
           crossing-2 [[(first rem-a) (last in-b)]
                       [(first in-a) (last rem-b)]]
           [i1 i2] (map #(apply line-segment-intersection %) [crossing-1 crossing-2])]
-      (concat rem-a [i1] (reverse in-a) [i2]))))
+      (concat rem-a [i1] (reverse in-a) [i2]))
+    pga))
 
 (defn polygon-union
   [pga pgb]
