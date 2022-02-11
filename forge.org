@@ -5037,10 +5037,7 @@ A namespace for playing around with fns
                  isometric-xf
                  (map drop-last)
                  vec)]
-    (-> (svg-clj.path/polygon pts)
-        (tf/style {:fill "none"
-                   :stroke "slategray"
-                   :stroke-width 0.5}))))
+    (svg-clj.path/polyline pts)))
 
 (defn- svg-single-surface
   [surface useg vseg]
@@ -5329,10 +5326,11 @@ A namespace for playing around with fns
 
 (def scad-slugs
   (let [shapes (slugs 9)]
-    (apply mdl/union 
-           (map #(-> (bmesh/surface % 16 50)
-                     mesh->polyhedron)
-                shapes))))
+    (-> (apply mdl/union 
+               (map #(-> (bmesh/surface % 16 50)
+                         mesh->polyhedron)
+                    shapes))
+        (mdl/color [51 51 51 1]))))
 
 (spit "forge.scad" (scad/write scad-slugs))
 
@@ -5340,32 +5338,129 @@ A namespace for playing around with fns
 
 ** 005
 #+begin_src clojure
-(def asdf
-  (let [a [20 30 40]
-        b [70 90 120]
-        base (bc/circle 40)
-        path (-> base
-                 bc/to-3D
-                 (bc/translate a)
-                 (bc/look-at b [0 1 0]))]
-    (mdl/group
-     (mdl/polyline [a b])
-     (mdl/polyline (map base (range 0 1.05 0.05)))
-     (mdl/polyline (map path (range 0 1.05 0.05))))))
+(def failing-cube
+  (let [spc 20
+        box-size 20
+        n 16
+        vox (apply concat
+                   (for [lz (range n)]
+                     (->> (bmesh/rect-grid n n spc spc)
+                          (map utils/add-z)
+                          (map #(utils/v+ [0 0 (* lz spc)] %)))))
+        block-fn (fn [pos] (-> (mdl/box box-size box-size box-size)
+                               (mdl/translate pos)
+                               (mdl/color [51 51 51 1])))]
+    (map block-fn (take (int (* 0.0625 n n n)) (shuffle vox)))))
 
-(def rev
-  (let [xs (bc/bezier [[0 0 0] [100 20 0] [0 100 0]])
-        path (-> (bc/circle 20) (bc/translate [50 0 0]))]
-    (-> (bs/revolve path [[20 30 40] [70 90 120]])
-        (bmesh/surface 20 20)
-        mesh->polyhedron
-        #_svg-surface2
-        #_el/g
-        #_(tf/translate [0 0 0])
-        #_(tf/style {:fill "white" :stroke "black"}))))
+(spit "forge.scad" (scad/write failing-cube))
+#+end_src
+
+** 006
+#+begin_src clojure
+(def bending-lines
+  (let [w 800
+        surf (bs/surface (bc/line [0.1 0 (* 0.25 w)] [0 0 (* 0.75 w)])
+                         (bc/bezier [[w 0 0]
+                                     [w (* -0.3 w) (* 0.325 w)]
+                                     [w (* 0.9 w) (* 0.5 w)]
+                                     [w 0 w]]))
+        curves (map (fn [t] #((bs/rotate surf [(* 90 t) 0 0]) % t)) (range 0 1 0.0375))
+        f (fn [curve]
+            (-> curve
+                (bmesh/curve 80)
+                :pts
+                mdl/polyline
+                (mdl/color [255 255 255 1])))]
+    (map f curves)))
+
+(def bending-lines-svg
+  (let [w 800
+        surf (bs/surface (bc/line [0.1 0 (* 0.25 w)] [0 0 (* 0.75 w)])
+                         (bc/bezier [[w 0 0]
+                                     [w (* -0.3 w) (* 0.325 w)]
+                                     [w (* 0.9 w) (* 0.5 w)]
+                                     [w 0 w]]))
+        curves (map (fn [t] #((bs/rotate surf [(* 90 t) 0 0]) % t)) (range 0 1 0.0375))
+        f (fn [curve]
+            (-> curve
+                (bmesh/curve 100)
+                :pts
+                (->> (map rest))
+                svg-clj.path/polyline
+                (tf/style {:fill "none"
+                           :stroke "white"})))]
+    (map f curves)))
+
+(spit "forge.scad" (scad/write bending-lines))
 
 #+end_src
 
+** 007
+#+begin_src clojure
+(defn rose-curve
+  [r [n d]]
+  (fn
+    ([]
+     {:fn `rose-curve
+      :input [r [n d]]
+      :origin [0 0]
+      :vertex-params [0]
+      :dimension 2})
+    ([t]
+     (let [k (/ n d)
+           theta (utils/to-rad (* t 360 d))
+           xr (* r (Math/cos (* k theta)))]
+       [(* xr (Math/cos theta))
+        (* xr (Math/sin theta))])))) 
+
+(def roses
+  (let [[n d] [4 9]
+        r 250
+        surf (bs/surface
+              #_(-> (rose-curve (* r 0.125) [d n]))
+              (-> (bc/circle (* r 0.1))
+                  (bc/rotate [0 0 (* 360 (double (/ n d)))]))
+              (-> (rose-curve r [n d])
+                  (bc/translate [0 0 (* 4 r)])))
+        curves (map (fn [t] #((-> surf
+                                  (bs/rotate [0 0 (* 360 t)])
+                                  (bs/translate [(* t r 2.5) 0 0])
+                                  (bs/rotate [0 0 (* 315 t)])) % t)) (range 0 1 (double (/ 1 6))))
+        f (fn [curve]
+            (-> curve
+                (bmesh/curve 300)
+                :pts
+                mdl/polyline
+                (mdl/color [255 255 255 1])))]
+    (map f curves)))
+
+(def roses-svg
+  (let [[n d] [9 7]
+        r 250
+        surf (bs/surface
+              #_(-> (rose-curve (* r 0.125) [d n]))
+              (-> (bc/circle (* r 0.1))
+                  (bc/rotate [0 0 45 #_(* 360 (double (/ n d)))]))
+              (-> (rose-curve r [n d])
+                  (bc/translate [0 0 (* 4 r)])))
+        curves (map (fn [t]
+                      #((-> surf
+                            (bs/rotate [0 0 (* 360 t)])
+                            (bs/translate [(* t r 2.5) 0 0])
+                            (bs/rotate [0 0 (* 315 t)])) % t)) (range 0 1 (double (/ 1 6))))
+        f (fn [curve]
+            (-> curve
+                (bmesh/curve 700)
+                :pts
+                (->> (map drop-last))
+                svg-clj.path/polygon
+                (tf/style {:fill "none"
+                           :stroke "white"})))]
+    (map f curves)))
+
+(spit "forge.scad" (scad/write roses))
+
+#+end_src
 ** extrude-along-scratch
 #+begin_src clojure
 (def axes
@@ -5581,7 +5676,7 @@ A namespace for playing around with fns
             [svg-clj.tools :as tools]))
 
 (def a (utils/regular-polygon-pts 120 4))
-(def b (map #(utils/v+ % [245 0]) a))
+(def b (map #(utils/v+ % [90 0]) (utils/regular-polygon-pts 30.01 4)))
 
 (def asdf
   (let [a-b (geom/polygon-difference a b)
@@ -5595,5 +5690,79 @@ A namespace for playing around with fns
          (tf/style {:fill "limegreen" :stroke "red"})))))
 
 (tools/cider-show asdf)
+
+#+end_src
+
+
+
+
+#+begin_src clojure
+
+
+(def bending-lines-svg
+  (let [w 800
+        surf (bs/surface (bc/line [0.1 0 (* 0.25 w)] [0 0 (* 0.75 w)])
+                         (bc/bezier [[w 0 0]
+                                     [w (* -0.3 w) (* 0.325 w)]
+                                     [w (* 0.9 w) (* 0.5 w)]
+                                     [w 0 w]]))
+        curves (map (fn [t] #((bs/rotate surf [(* 90 t) 0 0]) % t)) (range 0 1 0.0375))
+        f (fn [curve]
+            (-> curve
+                (bmesh/curve 100)
+                :pts
+                (->> (map rest))
+                svg-clj.path/polyline
+                (tf/style {:fill "none"
+                           :stroke "white"})))]
+    (map f curves)))
+
+
+
+
+
+(def roses-svg
+  (let [;; some adjustable params
+        [n d] [9 7]
+        r 250
+
+        ;; create a 3D surface linearly interpolated from
+        ;; a circle at [0 0 0] to a rose curve at [0 0 (* 4 r)]
+        surf (bs/surface
+              (bc/circle (* r 0.1))
+              (-> (rose-curve r [n d])
+                  (bc/translate [0 0 (* 4 r)])))
+
+        ;; slice the surface up. A planar slice of a 3D surface produces a curve
+        ;; (surf u v) -> we pin v for each slice creating a new curve fn
+        ;; for example we could manually def a slice:
+        ;; (def slice1 (fn [t] (surf t 0.1)))
+        curves (map (fn [v]
+                      #((-> surf
+                            (bs/rotate [0 0 (* 360 v)])
+                            (bs/translate [(* t r 2.5) 0 0])
+                            (bs/rotate [0 0 (* 315 v)])) % v))
+                    (range 0 1 (double (/ 1 6))))
+
+        ;; create a function to turn each curve into an
+        ;; svg polygon and style it
+        f (fn [curve]
+            (-> curve
+                (bmesh/curve 700)
+                :pts
+                (->> (map drop-last))
+                svg-clj.path/polygon
+                (tf/style {:fill "none"
+                           :stroke "white"})))]
+    ;; produce a list of svg polygon elements in hiccup syntax
+    ;; which is compiled to an SVG string and saved
+    (map f curves)))
+
+
+
+
+
+
+
 
 #+end_src
