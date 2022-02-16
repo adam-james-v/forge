@@ -5485,26 +5485,41 @@ A namespace for playing around with fns
 
 (defn collatz
   [n]
-  (->> (iterate next-collatz n)
-       (take-while #(not (= 1 %)))
-       reverse
-       (cons 1)))
+  (when (> n 0)
+    (->> (iterate next-collatz n)
+         (take-while #(not (= 1 %)))
+         reverse
+         (cons 1))))
 
 (defn collatz->pts
-  [n]
-  (let [a 1
-        l 2
-        f (fn [pts s]
+  [n {:keys [angle length]}]
+  (let [collatz-seq (collatz n)
+        #_#_angle (* angle (count collatz-seq))
+        #_#_length (double (/ length (count collatz-seq))) 
+        f (fn [last-a pts s]
             (if (empty? s)
               pts
               (let [[n xs] ((juxt first rest) s)
-                    a (if (even? n) a (* -1 a))
-                    pt (-> [l 0]
-                           (svg-clj.utils/rotate-pt a)
-                           (utils/v+ (last pts)))]
-              (recur (conj pts pt) xs))))]
-    (f [[0 0]] (collatz n))))
- 
+                    a-dir (if (even? n) 1 -1)
+                    xa (+ last-a (* angle a-dir))
+                    pt (-> [length 0]
+                           (svg-clj.utils/rotate-pt xa)
+                           (utils/v+ (last pts))
+                           (->> (mapv #(utils/round % 3))))]
+              (recur xa (conj pts pt) xs))))]
+    (f 0 [[0 0]] collatz-seq)))
+
+(def collatz-lines
+  (for [n (range 1000 4000)]
+    (-> (collatz->pts n {:angle 10.1
+                         :length 4})
+        el/polyline
+        (tf/style {:fill "none"
+                   :stroke "white"
+                   :opacity 0.1
+                   :stroke-width 1}))))
+
+(svg-clj.tools/cider-show collatz-lines)
 
 #+end_src
 
