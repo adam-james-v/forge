@@ -5435,19 +5435,30 @@ A namespace for playing around with fns
     (map f curves)))
 
 (def roses-svg
-  (let [[n d] [9 7]
+  (let [;; some adjustable params
+        [n d] [9 7]
         r 250
+
+        ;; create a 3D surface linearly interpolated from
+        ;; a circle at [0 0 0] to a rose curve at [0 0 (* 4 r)]
         surf (bs/surface
-              #_(-> (rose-curve (* r 0.125) [d n]))
-              (-> (bc/circle (* r 0.1))
-                  (bc/rotate [0 0 45 #_(* 360 (double (/ n d)))]))
+              (bc/circle (* r 0.1))
               (-> (rose-curve r [n d])
                   (bc/translate [0 0 (* 4 r)])))
-        curves (map (fn [t]
+
+        ;; slice the surface up. A planar slice of a 3D surface produces a curve
+        ;; (surf u v) -> we pin v for each slice creating a new curve fn
+        ;; for example we could manually def a slice:
+        ;; (def slice1 (fn [t] (surf t 0.1)))
+        curves (map (fn [v]
                       #((-> surf
-                            (bs/rotate [0 0 (* 360 t)])
+                            (bs/rotate [0 0 (* 360 v)])
                             (bs/translate [(* t r 2.5) 0 0])
-                            (bs/rotate [0 0 (* 315 t)])) % t)) (range 0 1 (double (/ 1 6))))
+                            (bs/rotate [0 0 (* 315 v)])) % v))
+                    (range 0 1 (double (/ 1 6))))
+
+        ;; create a function to turn each curve into an
+        ;; svg polygon and style it
         f (fn [curve]
             (-> curve
                 (bmesh/curve 700)
@@ -5456,11 +5467,47 @@ A namespace for playing around with fns
                 svg-clj.path/polygon
                 (tf/style {:fill "none"
                            :stroke "white"})))]
+    ;; produce a list of svg polygon elements in hiccup syntax
+    ;; which is compiled to an SVG string and saved
     (map f curves)))
 
 (spit "forge.scad" (scad/write roses))
 
 #+end_src
+
+*** 008
+#+begin_src clojure
+(defn next-collatz
+  [n]
+  (if (even? n)
+    (/ n 2)
+    (+ (* 3 n) 1)))
+
+(defn collatz
+  [n]
+  (->> (iterate next-collatz n)
+       (take-while #(not (= 1 %)))
+       reverse
+       (cons 1)))
+
+(defn collatz->pts
+  [n]
+  (let [a 1
+        l 2
+        f (fn [pts s]
+            (if (empty? s)
+              pts
+              (let [[n xs] ((juxt first rest) s)
+                    a (if (even? n) a (* -1 a))
+                    pt (-> [l 0]
+                           (svg-clj.utils/rotate-pt a)
+                           (utils/v+ (last pts)))]
+              (recur (conj pts pt) xs))))]
+    (f [[0 0]] (collatz n))))
+ 
+
+#+end_src
+
 ** extrude-along-scratch
 #+begin_src clojure
 (def axes
@@ -5690,79 +5737,5 @@ A namespace for playing around with fns
          (tf/style {:fill "limegreen" :stroke "red"})))))
 
 (tools/cider-show asdf)
-
-#+end_src
-
-
-
-
-#+begin_src clojure
-
-
-(def bending-lines-svg
-  (let [w 800
-        surf (bs/surface (bc/line [0.1 0 (* 0.25 w)] [0 0 (* 0.75 w)])
-                         (bc/bezier [[w 0 0]
-                                     [w (* -0.3 w) (* 0.325 w)]
-                                     [w (* 0.9 w) (* 0.5 w)]
-                                     [w 0 w]]))
-        curves (map (fn [t] #((bs/rotate surf [(* 90 t) 0 0]) % t)) (range 0 1 0.0375))
-        f (fn [curve]
-            (-> curve
-                (bmesh/curve 100)
-                :pts
-                (->> (map rest))
-                svg-clj.path/polyline
-                (tf/style {:fill "none"
-                           :stroke "white"})))]
-    (map f curves)))
-
-
-
-
-
-(def roses-svg
-  (let [;; some adjustable params
-        [n d] [9 7]
-        r 250
-
-        ;; create a 3D surface linearly interpolated from
-        ;; a circle at [0 0 0] to a rose curve at [0 0 (* 4 r)]
-        surf (bs/surface
-              (bc/circle (* r 0.1))
-              (-> (rose-curve r [n d])
-                  (bc/translate [0 0 (* 4 r)])))
-
-        ;; slice the surface up. A planar slice of a 3D surface produces a curve
-        ;; (surf u v) -> we pin v for each slice creating a new curve fn
-        ;; for example we could manually def a slice:
-        ;; (def slice1 (fn [t] (surf t 0.1)))
-        curves (map (fn [v]
-                      #((-> surf
-                            (bs/rotate [0 0 (* 360 v)])
-                            (bs/translate [(* t r 2.5) 0 0])
-                            (bs/rotate [0 0 (* 315 v)])) % v))
-                    (range 0 1 (double (/ 1 6))))
-
-        ;; create a function to turn each curve into an
-        ;; svg polygon and style it
-        f (fn [curve]
-            (-> curve
-                (bmesh/curve 700)
-                :pts
-                (->> (map drop-last))
-                svg-clj.path/polygon
-                (tf/style {:fill "none"
-                           :stroke "white"})))]
-    ;; produce a list of svg polygon elements in hiccup syntax
-    ;; which is compiled to an SVG string and saved
-    (map f curves)))
-
-
-
-
-
-
-
 
 #+end_src
