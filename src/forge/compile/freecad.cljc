@@ -173,7 +173,7 @@ fcname = os.path.abspath(pathname) + \"/out.FCStd\"
   (let [name (gensym "polyhedron_")
         get-pts (fn [face] (mapv #(get (vec pts) %) face))
         faces (mapv get-pts faces)]
-    (str name " = " "Part.makeSolid(Part.makeShell(" 
+    (str name " = " "Part.makeSolid(Part.makeShell("
          (str/join ", " faces) "))")))
 
 (defmethod write-expr :extrude-linear

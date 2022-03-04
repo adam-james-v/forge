@@ -98,19 +98,19 @@
                ;; all vals false, no coincident points
                (not (seq (filter true? (vals ctable))))
                (surface-between* curve-a curve-b)
-               
+
                ;; curves may be closed, but don't share start/end pts
                (and (not (ctable [a0 b0])) (not (ctable [a1 b1])))
                (surface-between* curve-a curve-b)
-               
+
                ;; start and end points for each curve are coincident
                (and (ctable [a0 b0]) (ctable [a1 b1]))
                (surface-between* curve-a curve-b)
-               
+
                ;; only start pts coincide
                (ctable [a0 b0])
                (surface-along* curve-a curve-b)
-               
+
                ;; only end pts coincide
                (ctable [a1 b1])
                (surface-along* curve-a curve-b))]

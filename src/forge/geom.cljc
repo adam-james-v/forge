@@ -1,6 +1,6 @@
 (ns forge.geom
   (:require [forge.utils :as utils]
-            [forge.clip-ears :as clip-ears]
+            [forge.clip-ears :as ce]
             [clojure.string :as str]
             [same :refer [ish? zeroish?]]))
 
@@ -16,9 +16,9 @@
 
 (defn area
   [pts]
-  (let [tris (:triangles (clip-ears/triangulate pts))]
+  (let [tris (:triangles (ce/triangulate pts))]
     (->> pts
-         clip-ears/triangulate
+         ce/triangulate
          :tris
          (map triangle-area)
          (reduce +))))
@@ -153,7 +153,7 @@
 
 (defn pt-inside?
   [pg pt]
-  (let [tris (:tris (clip-ears/triangulate pg))]
+  (let [tris (:tris (ce/triangulate pg))]
     (some true? (concat
                  (map #(utils/pt-on-perimeter? % pt) tris)
                  (map #(utils/pt-inside? % pt) tris)))))

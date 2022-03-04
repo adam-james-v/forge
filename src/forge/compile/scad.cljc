@@ -42,13 +42,13 @@
   (str/join ", " (map (fn [[k v]] (str (name k) "=" (make-arguments [v])) ) m)))
 
 (defmethod write-expr :circle
-  [depth [_ {:keys [r center]}]] 
-  (list (indent depth) 
+  [depth [_ {:keys [r center]}]]
+  (list (indent depth)
         "circle (r=" r ");\n"))
 
 (defmethod write-expr :ellipse
-  [depth [_ {:keys [rx ry center]}]] 
-  (list (indent depth) 
+  [depth [_ {:keys [rx ry center]}]]
+  (list (indent depth)
         "scale([1, " (/ ry rx) ", 1])circle (r=" rx ");\n"))
 
 (defmethod write-expr :rect
@@ -75,7 +75,7 @@
 
 (defmethod write-expr :sphere
   [depth [_ {:keys [r center]}]]
-  (list (indent depth) 
+  (list (indent depth)
         "sphere (r=" r ");\n"))
 
 (defmethod write-expr :box
@@ -87,7 +87,7 @@
 (defmethod write-expr :cylinder
   [depth [_ {:keys [h r r1 r2 center]}]]
   (concat
-   (list (indent depth) 
+   (list (indent depth)
          "cylinder (h=" h)
    (if r (list ", r=" r) (list ", r1=" r1 ", r2=" r2))
    (when center (list ", center=true"))
@@ -104,11 +104,11 @@
 (defmethod write-expr :extrude
   [depth [_ {:keys [h]} elem]]
   (concat
-   (list (indent depth) 
+   (list (indent depth)
          "linear_extrude(height=" h
          "){\n")
    (write-expr (inc depth) elem)
-   (list (indent depth) 
+   (list (indent depth)
          "}\n")))
 
 (defmethod write-expr :revolve
@@ -118,7 +118,7 @@
          "rotate_extrude(angle=" a
          "){\n")
    (write-expr (inc depth) elem)
-   (list (indent depth) 
+   (list (indent depth)
          "}\n")))
 
 (defmethod write-expr :translate
@@ -163,7 +163,7 @@
 
 (defmethod write-expr :offset
   [depth [_ {:keys [d]} elem]]
-  (concat 
+  (concat
    (list (indent depth) "offset (r = " d "){\n")
    (write-expr (inc depth) elem)
    (list (indent depth) "}\n")))
@@ -218,7 +218,7 @@
     (write-expr depth elem)
     (list (indent depth) "}\n")))
 
-(defmethod write-expr :group 
+(defmethod write-expr :group
   [depth [_ _ elems]]
   (concat
    (list (indent depth) "group() {\n")
@@ -306,5 +306,5 @@
     (do (sh "openscad" "/dev/stdin" "-o" fname :in scad)
         (let [svg-str (slurp fname)]
           (do (sh "rm" fname)
-              (rest 
+              (rest
                (svg-str->hiccup svg-str)))))))

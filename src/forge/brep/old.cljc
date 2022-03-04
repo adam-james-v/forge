@@ -28,7 +28,7 @@
         intervals (partition 2 1 (range 0 (+ 1 step) step))
         lines (map (partial apply line) (partition 2 1 pts))]
     (fn [t]
-      (cond 
+      (cond
         (= t :tag) :polyline
         (= (float t) 0.0) (first pts)
         (= (float t) 1.0) (last pts)
@@ -97,7 +97,7 @@
   [pts]
   (if (= 3 (count pts))
     (apply quadratic-bezier pts)
-    (let [lines (map #(apply line %) (partition 2 1 pts))] 
+    (let [lines (map #(apply line %) (partition 2 1 pts))]
       (fn [t]
         (let [npts (map #(% t) lines)]
           ((bezier npts) t))))))
@@ -144,7 +144,7 @@
 
 (defn brep-rotate
   [f angles]
-  (comp #(utils/rotate-point % angles) f))
+  (comp #(utils/rotate-pt % angles) f))
 
 (defn scale
   [f scales]

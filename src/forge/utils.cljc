@@ -4,7 +4,7 @@
 
 (defn nearly?
   "compare two float values for approximate equality.
-   
+
    Default epsilon = 0.00001"
   ([^double a ^double b]
    (nearly? a b 0.00001))
@@ -19,8 +19,8 @@
              diff (Math/abs (- a b))
              min-f 1.17549435E-38
              max-f 3.4028235E38]
-         (if (or (= a 0.0) 
-                 (= b 0.0) 
+         (if (or (= a 0.0)
+                 (= b 0.0)
                  (< (+ absA absB) min-f))
            (< diff (* epsilon min-f))
            (< (/ diff (Math/min (+ absA absB) max-f)) epsilon)))))))
@@ -32,9 +32,9 @@
     #?(:clj  (throw (Exception. "collections must be same size."))
        :cljs (throw (js/Error. "collections must be same size.")))
     (let [diffs (mapv #(float (Math/abs ^double (- %1 %2))) coll-a coll-b)]
-      (empty? 
-       (filter 
-        false? 
+      (empty?
+       (filter
+        false?
         (map zeroish? diffs))))))
 
 (defn my-zeroish?
@@ -125,7 +125,7 @@
 (defn concat-new
   "concat two vectors together pushing only unique items."
   [a b]
-  (reduce push-new a b)) 
+  (reduce push-new a b))
 
 #_(defn position
   "returns index of first match to item in the src vector. Otherwise nil"
@@ -274,13 +274,13 @@
   (let [[a b] line
         ap (add-z (v- a pt))
         bp (add-z (v- b pt))]
-    (if (or (all-nearly? pt a) 
+    (if (or (all-nearly? pt a)
             (all-nearly? pt b))
       true
       (let [na (normalize ap)
             nb (normalize bp)]
-        (and 
-         (all-nearly? (cross* ap bp) [0 0 0]) 
+        (and
+         (all-nearly? (cross* ap bp) [0 0 0])
          (not (all-nearly? na nb)))))))
 
 (defn on-line-inf?
@@ -387,7 +387,7 @@ Put another way, the angle is measured following the 'right hand rule' around p2
           (and (= "nnnn" quadrants) (< v2nx v1nx)) a
           (and (= "pnpn" quadrants) (< v2nx v1nx)) a
           ;; within same quadrant
-          (#{"p_p_" "ppp_" "_ppp" "p_pn"} quadrants) a 
+          (#{"p_p_" "ppp_" "_ppp" "p_pn"} quadrants) a
           (#{"_p_p" "np_p" "n_np"} quadrants) a
           (#{"n_n_" "nnn_" "_nnn"} quadrants) a
           (#{"_n_n" "pn_n" "pnp_"} quadrants) a
@@ -419,10 +419,10 @@ Put another way, the angle is measured following the 'right hand rule' around p2
           v (cross* w u)
           [bx by] [(dot* u1 u) 0]
           [cx cy] [(dot* u2 u) (dot* u2 v)]
-          h (/ (+ (sq (- cx (/ bx 2))) (sq cy) (- 0 (sq (/ bx 2)))) 
+          h (/ (+ (sq (- cx (/ bx 2))) (sq cy) (- 0 (sq (/ bx 2))))
                (* 2 cy))]
-      (v+ p1 
-          (v* (repeat (/ bx 2)) u) 
+      (v+ p1
+          (v* (repeat (/ bx 2)) u)
           (v* (repeat h) v)))))
 
 (defn corner-condition
@@ -448,7 +448,7 @@ Put another way, the angle is measured following the 'right hand rule' around p2
   [pts]
   (if (< (count pts) 3) nil
     (let [[a b c] pts]
-      (if (on-line? c [a b]) 
+      (if (on-line? c [a b])
         (plane-triple (vec-inner-pop pts 2))
         [a b c]))))
 
@@ -513,13 +513,13 @@ Put another way, the angle is measured following the 'right hand rule' around p2
             [0
              (/ Math/PI 2)
              (* 2 (Math/atan2 (* x (Math/sin ah)) (Math/cos ah)))])
-      
+
       (and (neg? z) (< (abs (- 1 z)) eps)) ;; points down
       (mapv to-deg
             [0
              (/ Math/PI -2)
              (* -2 (Math/atan2 (* x (Math/sin ah)) (Math/cos ah)))])
-      
+
       :else
       (mapv to-deg
             [(Math/atan2

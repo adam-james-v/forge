@@ -11,11 +11,11 @@
             [forge.model :as mdl]
             [forge.utils :as utils]))
 
-(defn img->str 
+(defn img->str
   [fname]
   "Ingest image file `fname` and transform it into a hiccup data structure."
   (let [new-fname (str (first (str/split fname #"\.")) ".svg")]
-    (sh "vtracer" 
+    (sh "vtracer"
         "--mode" "polygon"
         "--colormode" "bw"
         "--segment_length" "3.5"
@@ -117,7 +117,7 @@
         angle (last (get xf-map :rotate [0]))
         xf-props (clean-props props)
         pos (-> (utils/v+ [x y] [(/ width 2.0) (/ height 2.0)])
-                (utils/rotate-point [0 0 angle]))]
+                (utils/rotate-pt [0 0 angle]))]
     (-> (mdl/rect width height)
         xf
         (mdl/style xf-props)
@@ -154,7 +154,7 @@
 (defn- svg-path-elem->polyline
   [path-elem]
   (let [pgs (->> path-elem
-                 path/split-path 
+                 path/split-path
                  (sort-by bb-area)
                  (map path->pts)
                  (map mdl/polyline)

@@ -11,11 +11,11 @@
 ;; multimethod
 (defmulti elem-to-svg
   (fn [element _]
-    (if (keyword? (first element)) 
-      (first element) 
+    (if (keyword? (first element))
+      (first element)
       :list)))
 
-(defmethod elem-to-svg :list 
+(defmethod elem-to-svg :list
   [[& args] xf]
   (map #(elem-to-svg % xf) args))
 
@@ -26,23 +26,23 @@
         pts (->> (utils/regular-polygon-pts r 40)
                  (mapv #(conj % 0))
                  (mapv #(utils/v+ origin %))
-                 (mapv #(utils/rotate-point % rot))
+                 (mapv #(utils/rotate-pt % rot))
                  xf)]
     (-> (path/polygon-path pts)
         (tf/style {:fill "none"
                    :stroke "black"
                    :stroke-width "2px"}))))
 
-(defmethod elem-to-svg :rect 
+(defmethod elem-to-svg :rect
   [[_ {:keys [x y center origin rotation]}] xf]
   (let [pts (->> (if center
                    [ [(/ x -2.0) (/ y -2.0)]
-                    [(/ x 2.0) (/ y -2.0)] 
+                    [(/ x 2.0) (/ y -2.0)]
                     [(/ x 2.0) (/ y 2.0)]
                     [(/ x -2.0) (/ y 2.0)] ]
                    [ [0 0] [x 0] [x y] [0 y] ])
                  (mapv #(utils/v+ origin %))
-                 (mapv #(utils/rotate-point % rotation))
+                 (mapv #(utils/rotate-pt % rotation))
                  xf)]
     (-> (path/polygon-path pts)
         (tf/style {:fill "none"
@@ -53,17 +53,17 @@
   [[_ {:keys [pts paths convexity]}] xf]
   (let [polygons (for [path paths]
                    (xf (map #(get pts %) path)))]
-    (-> (apply path/merge-paths 
+    (-> (apply path/merge-paths
                (map path/polygon-path polygons))
         (tf/style {:fill "none"
                    :stroke "black"
                    :stroke-width "2px"}))))
 
-(defmethod elem-to-svg :translate 
+(defmethod elem-to-svg :translate
   [[_ {:keys [xf-elem]} block] xf]
   (elem-to-svg xf-elem xf))
 
-(defmethod elem-to-svg :rotate 
+(defmethod elem-to-svg :rotate
   [[_ {:keys [xf-elem]} block] xf]
   (elem-to-svg xf-elem xf))
 
@@ -73,7 +73,7 @@
 
 (defn rotate-points
   [[ax ay az] pts]
-  (mapv #(utils/rotate-point % [ax ay az]) pts))
+  (mapv #(utils/rotate-pt % [ax ay az]) pts))
 
 (defn isometric-xf
   [pts]

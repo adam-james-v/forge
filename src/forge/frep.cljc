@@ -1,6 +1,7 @@
 (ns forge.frep
   (:require [forge.utils :as utils]
             [forge.geom :as geom]
+            [forge.clip-ears :as ce]
             [forge.delaunay :as delaunay]
             [svg-clj.elements :as svg]
             [svg-clj.transforms :as tf]
@@ -53,7 +54,7 @@
   (fn [pt]
     (let [[e0 e1 e2] (map #(apply utils/v- %) [[b a] [c b] [a c]])
           [v0 v1 v2] (map (partial utils/v- pt) [a b c])
-          xf (fn [v e] 
+          xf (fn [v e]
                (utils/v- v (map * e (repeat (utils/clamp (/ (utils/dot* v e) (utils/dot* e e)) 0 1)))))
           [pq0 pq1 pq2] (map #(apply xf %) [[v0 e0] [v1 e1] [v2 e2]])
           s (utils/sign (- (* (first e0) (second e2)) (* (second e0) (first e2))))
@@ -69,7 +70,7 @@
   [l w]
   (let [b [(/ l 2.0) (/ w 2.0)]]
     (fn [pt]
-      (let [abs-pt (mapv #(Math/abs ^long %) pt)  
+      (let [abs-pt (mapv #(Math/abs ^long %) pt)
             d (utils/v- abs-pt b)]
         (+ (utils/distance (mapv #(max % 0) d) (repeat 0))
            (min (apply max d) 0))))))
@@ -79,21 +80,10 @@
   (fn [pt]
     (- (utils/distance pt (repeat 0)) r)))
 
-(defn polygon
+#_(defn polygon
   [pts]
-  (let [tris (map #(apply triangle %) (geom/clip-ears pts))] 
+  (let [tris (map #(apply triangle %) (ce/triangulate pts))]
     (reduce union tris)))
-
-
-
-
-
-
-
-
-
-
-
 
 (defn polygon
   [pts]
@@ -113,7 +103,7 @@
                 [wx wy :as w] (utils/v- pt vi)
                 [bx by :as b] (utils/v-
                                w
-                               (mapv #(* % (utils/clamp 
+                               (mapv #(* % (utils/clamp
                                             (/ (utils/dot* w e)
                                                (utils/dot* e e)) 0.0 1.0)) e))
                 d (min d (utils/dot* b b))
@@ -166,7 +156,7 @@
 (defn rotate
   [f angles]
   (fn [pt]
-    (f (utils/rotate-point pt angles))))
+    (f (utils/rotate-pt pt angles))))
 
 (defn scale
   [f scales]

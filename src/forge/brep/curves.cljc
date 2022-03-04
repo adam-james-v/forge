@@ -189,9 +189,9 @@
          (= (float t) 1.0) (vec (drop-last a))
          :else
          (let [t (* 2 Math/PI t)]
-           (mapv 
+           (mapv
             #(utils/round % 5)
-            (drop-last 
+            (drop-last
              (utils/v+ cp
                        (utils/v* (repeat (* r (Math/cos t))) u)
                        (utils/v* (repeat (* r (Math/sin t))) v)))))))))))
@@ -230,7 +230,7 @@
 
 (defn ellipse
   [rx ry]
-  (fn 
+  (fn
     ([] {:fn `ellipse
          :input [rx ry]
          :origin [0 0]
@@ -255,7 +255,7 @@
   [pts]
   (if (= 3 (count pts))
     (apply quadratic-bezier pts)
-    (let [lines (map #(apply fastline %) (partition 2 1 pts))] 
+    (let [lines (map #(apply fastline %) (partition 2 1 pts))]
       (fn
         [t]
         (let [npts (map #(% t) lines)]
@@ -322,7 +322,7 @@
   (let [n (dec (count ws))
         poly (partial polynomial n)
         bi (partial binomial n)]
-    (reduce + (map-indexed 
+    (reduce + (map-indexed
                (fn [i w]
                  (* (bi i) (poly i t) w))
                ws))))
@@ -333,7 +333,7 @@
         ys (map #(* (second %1) %2) pts wts)
         dn (partial half-bezier wts)]
     (fn [t]
-      [(/ (half-bezier xs t) (dn t)) 
+      [(/ (half-bezier xs t) (dn t))
        (/ (half-bezier ys t) (dn t))])))
 
 (defn rational-bezier
@@ -484,7 +484,7 @@
 
       (and is-line (aligned? v1 [0 0 1]))
       [0 1 0]
-      
+
       :else
       [0 0 1])))
 
