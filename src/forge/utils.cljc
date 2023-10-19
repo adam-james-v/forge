@@ -46,7 +46,6 @@
 (def v- (partial mapv -))
 (def v* (partial mapv *))
 
-(def abs #?(:clj #(Math/abs %)  :cljs js/Math.abs))
 (def pow #?(:clj #(Math/pow %1 %2) :cljs js/Math.pow))
 
 (defn to-deg
@@ -206,7 +205,7 @@
          ab (v- a b)
          ac (v- a c)
          [x y z] (cross* (add-z ab) (add-z ac))]
-     (when (or (> (abs x) eps) (> (abs y) eps) (> (abs z) eps))
+     (when true #_(or (> (abs x) eps) (> (abs y) eps) (> (abs z) eps))
        [x y z]))))
 
 (defn normalize

@@ -1,13 +1,5 @@
 (ns forge.frep
-  (:require [forge.utils :as utils]
-            [forge.geom :as geom]
-            [forge.clip-ears :as ce]
-            [forge.delaunay :as delaunay]
-            [svg-clj.elements :as svg]
-            [svg-clj.transforms :as tf]
-            [svg-clj.tools :as tools]
-            [clojure.string :as str]
-            [same :refer [ish? zeroish?]]))
+  (:require [forge.utils :as utils]))
 
 (defn union [f g]
   (fn [pt]

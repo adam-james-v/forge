@@ -1,7 +1,8 @@
 (ns forge.compile.svg
   (:require [clojure.java.shell :refer [sh]]
             [clojure.string :as str]
-            [svg-clj.elements :as svg]
+            [svg-clj.composites :as comp]
+            [svg-clj.elements :as el]
             [svg-clj.path :as path]
             [svg-clj.transforms :as tf]
             [svg-clj.tools :as tools]
@@ -28,7 +29,7 @@
                  (mapv #(utils/v+ origin %))
                  (mapv #(utils/rotate-pt % rot))
                  xf)]
-    (-> (path/polygon-path pts)
+    (-> (path/polygon pts)
         (tf/style {:fill "none"
                    :stroke "black"
                    :stroke-width "2px"}))))
@@ -44,7 +45,7 @@
                  (mapv #(utils/v+ origin %))
                  (mapv #(utils/rotate-pt % rotation))
                  xf)]
-    (-> (path/polygon-path pts)
+    (-> (path/polygon pts)
         (tf/style {:fill "none"
                    :stroke "black"
                    :stroke-width "2px"}))))
@@ -54,7 +55,7 @@
   (let [polygons (for [path paths]
                    (xf (map #(get pts %) path)))]
     (-> (apply path/merge-paths
-               (map path/polygon-path polygons))
+               (map path/polygon polygons))
         (tf/style {:fill "none"
                    :stroke "black"
                    :stroke-width "2px"}))))
@@ -97,6 +98,6 @@
   [& mdl-data]
   (->> mdl-data
        (mapv #(elem-to-svg % isometric-xf))
-       svg/g
-       svg/svg
+       el/g
+       comp/svg
        #_html))

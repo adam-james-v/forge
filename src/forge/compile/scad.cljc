@@ -2,7 +2,7 @@
   (:require [clojure.java.shell :refer [sh]]
             [clojure.string :as str]
             [forge.utils :as utils]
-            [svg-clj.utils :refer [svg-str->hiccup]]
+            [svg-clj.jvm-utils :refer [svg-str->hiccup]]
             [forge.model :as mdl]))
 
 ;; multimethod

@@ -6,8 +6,8 @@
             [svg-clj.elements :as svg]
             [svg-clj.path :as path]
             [svg-clj.transforms :as tf]
-            [svg-clj.utils :refer [s->v
-                                   svg-str->hiccup]]
+            [svg-clj.utils :refer [s->v]]
+            [svg-clj.jvm-utils :refer [svg-str->hiccup]]
             [forge.model :as mdl]
             [forge.utils :as utils]))
 

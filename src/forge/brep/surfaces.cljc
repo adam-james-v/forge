@@ -37,7 +37,7 @@
 (defn coincident?
   [a b]
   (let [eps 0.00001
-        diffs (map #(utils/abs (- %1 %2)) a b)]
+        diffs (map #(abs (- %1 %2)) a b)]
     (when (= (count a) (count b))
       (= #{true} (set (map #(< % eps) diffs))))))
 
@@ -75,14 +75,18 @@
 
 (defn surface-along*
   [curve-a curve-b]
-  (fn [u v]
-    (utils/v+ (curve-a u) (curve-b v))))
+  (fn
+    ([] {})
+    ([u v]
+     (utils/v+ (curve-a u) (curve-b v)))))
 
 (defn surface-between*
   [curve-a curve-b]
-  (fn [u v]
-    (let [l (c/line (curve-a u) (curve-b u))]
-      (l v))))
+  (fn
+    ([] {})
+    ([u v]
+     (let [l (c/line (curve-a u) (curve-b u))]
+       (l v)))))
 
 (defn surface
   [curve-a curve-b]
@@ -146,13 +150,13 @@
   ([curve h] (extrude-curve curve [0 0 1] h))
   ([curve direction d]
    (let [curve (c/to-3D curve)
-         v (utils/v* (utils/normalize direction) (repeat 3 d))]
+         vv (utils/normalize (utils/v* (utils/normalize direction) (repeat 3 d)))]
      (fn
        ([] {:fn `extrude-curve
             :input [curve direction d]
             :origin (:origin (curve))})
        ([u v]
-        (utils/v+ (curve u) (utils/v* v (repeat 3 (* d v)))))))))
+        (utils/v+ (curve u) (utils/v* vv (repeat 3 (* d v)))))))))
 
 (defn rect
   [w h]
@@ -162,7 +166,7 @@
     (fn
       ([] {:fn `rect
            :input [w h]
-           :origin [(uline 0.5) (vline 0.5) 0]})
+           :origin [(first (uline 0.5)) (second (vline 0.5)) 0]})
       ([u v]
        [(first (uline u))
         (second (vline v))
@@ -181,7 +185,7 @@
 
 (defn triangle
   [a b c]
-  (let [ctr (utils/centroid-of-pts a b c)
+  (let [ctr (utils/centroid-of-pts [a b c])
         perim (c/polygon [a b c])]
     (fn
       ([] {:fn `triangle
@@ -334,13 +338,12 @@
 
 (defn offset
   [surf t]
-  (let []
-    (fn
-      ([] {:fn `offset
-           :input [surf t]
-           :origin (surf 0.5 0.5)})
-      ([u v]
-       (let [pt (surf u v)
-             n (normal surf [u v])
-             v (utils/v* n (repeat t))]
-         (utils/v+ pt v))))))
+  (fn
+    ([] {:fn `offset
+         :input [surf t]
+         :origin (surf 0.5 0.5)})
+    ([u v]
+     (let [pt (surf u v)
+           n (normal surf [u v])
+           v (utils/v* n (repeat t))]
+       (utils/v+ pt v)))))

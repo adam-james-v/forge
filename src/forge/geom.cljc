@@ -32,7 +32,7 @@
         xdiff [(- ax bx) (- cx dx)]
         ydiff [(- ay by) (- cy dy)]
         div (utils/determinant xdiff ydiff)]
-    (when-not (zeroish? (utils/abs div))
+    (when-not (zeroish? (abs div))
       (let [d [(utils/determinant a b) (utils/determinant c d)]
             x (/ (utils/determinant d xdiff) div)
             y (/ (utils/determinant d ydiff) div)]
@@ -257,7 +257,7 @@
                  {:pt pt :angle a}))
            sorted (->> (map f pts)
                        (remove #(nil? (:angle %)))
-                       (sort-by #(utils/abs (- (:angle %) 180))))]
+                       (sort-by #(abs (- (:angle %) 180))))]
        (recur (conj acc (first sorted)) pts)))))
 
 (defn nested-hull

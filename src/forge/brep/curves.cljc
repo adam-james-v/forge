@@ -152,6 +152,21 @@
           (filter some?
                   (map #(remap-within %1 %2 t) lines intervals))))))))
 
+(defn to-3D
+  [curve]
+  (let [data (curve)
+        origin (utils/add-z (:origin data))]
+    (if (< (:dimension data) 3)
+      (fn
+        ([] (merge data {:fn `to-3D
+                         :input [curve]
+                         :origin origin
+                         :dimension 3}))
+        ([t]
+         (when (curve t)
+           (vec (concat (curve t) [0])))))
+      curve)))
+
 (defn circle
   ([r]
    (fn
@@ -173,7 +188,8 @@
          r (utils/radius-from-pts a b c)
          cp (utils/arc-center-from-pts a b c)
          u (utils/normalize (utils/v- a cp))
-         v (utils/cross* n u)]
+         v (utils/cross* n u)
+         dropfn (if (= (count a) 2) drop-last identity)]
      (fn
        ([] {:fn `circle
             :input [a b c]
@@ -183,23 +199,23 @@
             :length (* Math/PI 2 r)
             :radius r})
        ([t]
-       (cond
-         (or (< t 0.0) (> t 1.0)) nil
-         (= (float t) 0.0) (vec (drop-last a))
-         (= (float t) 1.0) (vec (drop-last a))
-         :else
-         (let [t (* 2 Math/PI t)]
-           (mapv
-            #(utils/round % 5)
-            (drop-last
-             (utils/v+ cp
-                       (utils/v* (repeat (* r (Math/cos t))) u)
-                       (utils/v* (repeat (* r (Math/sin t))) v)))))))))))
+        (cond
+          (or (< t 0.0) (> t 1.0)) nil
+          (= (float t) 0.0) (vec (dropfn a))
+          (= (float t) 1.0) (vec (dropfn a))
+          :else
+          (let [t (* 2 Math/PI t)]
+            (mapv
+             #(utils/round % 5)
+             (dropfn
+              (utils/v+ cp
+                        (utils/v* (repeat (* r (Math/cos t))) u)
+                        (utils/v* (repeat (* r (Math/sin t))) v)))))))))))
 
 (defn arc
   [a b c]
   (let [[a b c] (map utils/add-z [a b c])
-        f (circle a b c)
+        f (to-3D (circle a b c))
         cp (utils/arc-center-from-pts a b c)
         angle (utils/angle-from-pts a cp c)
         r (utils/radius-from-pts a b c)]
@@ -349,21 +365,6 @@
            :length length})
       ([t] (curve t)))))
 
-(defn to-3D
-  [curve]
-  (let [data (curve)
-        origin (utils/add-z (:origin data))]
-    (if (< (:dimension data) 3)
-      (fn
-        ([] (merge data {:fn `to-3D
-                         :input [curve]
-                         :origin origin
-                         :dimension 3}))
-        ([t]
-         (when (curve t)
-           (vec (concat (curve t) [0])))))
-      curve)))
-
 (defn translate
   [f [x y z]]
   (let [data (f)
@@ -509,3 +510,59 @@
              (utils/v- ctr)
              (utils/transform-pt-matrix m)
              (utils/v+ ctr)))))))))
+
+(ns forge.scene
+  (:require [clojure.string :as str]
+            [forge.utils :as utils]
+            [forge.geom :as geom]
+            [forge.model :as mdl]))
+
+(def iso-euler-angles [35.264 45 0])
+(def origin-angle-adjust-a [90 0 0])
+(def origin-angle-adjust-b [0 -90 0])
+
+(defn- sin-cos-pair [theta]
+  [(Math/sin ^double (utils/to-rad theta))
+   (Math/cos ^double (utils/to-rad theta))])
+
+(defn- rot-pt-2d
+  [[x y] theta]
+  (let [[s-t c-t] (sin-cos-pair theta)]
+    [(- (* x c-t) (* y s-t))
+     (+ (* y c-t) (* x s-t))]))
+
+;; this rotates a point around [0,0,0]
+(defn- rot-pt
+  [[x y z] axis theta]
+  (cond
+    (= axis :x) (into [x] (rot-pt-2d [y z] theta))
+    (= axis :y) (apply #(into [] [%2 y %1]) (rot-pt-2d [z x] theta))
+    (= axis :z) (into (rot-pt-2d [x y] theta) [z])))
+
+(defn- rotate-point
+  [pt [ax ay az]]
+  (let [pt (if (< (count pt) 3)
+             (conj pt 0)
+             pt)]
+    (-> pt
+        (rot-pt :z az)
+        (rot-pt :y ay)
+        (rot-pt :x ax))))
+
+(defn- rotate-points
+  [pts [ax ay az]]
+  (mapv #(rotate-point % [ax ay az]) pts))
+
+(defn- rotate-points2
+  [pts [ax ay az]]
+  (transduce (comp #(rot-pt % :z az)
+                   #(rot-pt % :y ay)
+                   #(rot-pt % :x ax)) conj [] pts))
+
+;; todo: do this with 4x4 tfrm matrix instead.
+(defn isometric-xf-pts
+  [pts]
+  (-> pts
+      (rotate-points origin-angle-adjust-a)
+      (rotate-points origin-angle-adjust-b)
+      (rotate-points iso-euler-angles)))

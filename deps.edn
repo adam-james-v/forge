@@ -1,8 +1,7 @@
-{:deps 
+{:deps
  {org.clojure/clojure            {:mvn/version "1.10.3"}
   org.clojure/test.check         {:mvn/version "0.9.0"}
   org.clojure/math.numeric-tower {:mvn/version "0.0.4"}
   hiccup/hiccup                  {:mvn/version "2.0.0-alpha2"}
   same/ish                       {:mvn/version "0.1.4"}
-  org.clojars.rorokimdim/pp-grid {:mvn/version "0.1.11"}
-  svg-clj/svg-clj                {:local/root "/Users/adam/dev/svg-clj"}}}
+  svg-clj/svg-clj                {:local/root "../svg-clj"}}}

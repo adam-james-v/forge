@@ -11,14 +11,13 @@
 ** deps.edn
 #+NAME: deps.edn
 #+begin_src clojure :tangle ./deps.edn
-{:deps 
+{:deps
  {org.clojure/clojure            {:mvn/version "1.10.3"}
   org.clojure/test.check         {:mvn/version "0.9.0"}
   org.clojure/math.numeric-tower {:mvn/version "0.0.4"}
   hiccup/hiccup                  {:mvn/version "2.0.0-alpha2"}
   same/ish                       {:mvn/version "0.1.4"}
-  org.clojars.rorokimdim/pp-grid {:mvn/version "0.1.11"}
-  svg-clj/svg-clj                {:local/root "/Users/adam/dev/svg-clj"}}}
+  svg-clj/svg-clj                {:local/root "../svg-clj"}}}
 
 #+end_src
 
@@ -3622,8 +3621,8 @@ This is just copy pasted from scad-drawing project. The intent here is to have a
             [svg-clj.elements :as svg]
             [svg-clj.path :as path]
             [svg-clj.transforms :as tf]
-            [svg-clj.utils :refer [s->v
-                                   svg-str->hiccup]]
+            [svg-clj.utils :refer [s->v]]
+            [svg-clj.jvm-utils :refer [svg-str->hiccup]]
             [forge.model :as mdl]
             [forge.utils :as utils]))
 
@@ -3855,6 +3854,86 @@ Elements being converted:
 
 #+end_src
 
+* scene
+The scene namespace is useful for certain kinds of compilers that may require concepts of cameras and lights. For instance, the SVG compilation inherently involves projecting a 3D object onto a 2D surface, so the question will arise: how is this object being viewed? And the scene will dictate the result.
+
+It might also be very helpful for exporting to blender files or three.js scenes, gltf, that sort of thing.
+
+This namespace will:
+
+- take some mdl
+- take a scene map that specifies:
+  - a camera map {:type orthographic/perspective :position [x y z] :other necessary options per camera}
+  - an optional set of lights [{:position [x y z] :color, etc...}]
+  - world details {:up [0 0 1] :axes [1 -1 1] (some way to indicate if a flip must happen)
+- from these, calculate the full transform function needed to look through the camera's viewport -> do this as a matrix transform, and return the 4x4 tfrm matrix
+- do nothing directly, just return the transform to be used further down the line by a compiler
+
+It'll also be good to provide a helper or two:
+- sensible default camera(s) for different applications
+- top/right/left/iso camera positions and settings for common CAD views
+- some intelligence for 'missing' information -> for example, have 'fit to viewport' kind of stuff so that the user doesn't have to guess camera position and/or zoom levels.
+- automatic look-at if camera position is given
+
+** ns
+#+begin_src clojure :tangle ./src/forge/brep/curves.cljc
+(ns forge.scene
+  (:require [clojure.string :as str]
+            [forge.utils :as utils]
+            [forge.geom :as geom]
+            [forge.model :as mdl]))
+
+(def iso-euler-angles [35.264 45 0])
+(def origin-angle-adjust-a [90 0 0])
+(def origin-angle-adjust-b [0 -90 0])
+
+(defn- sin-cos-pair [theta]
+  [(Math/sin ^double (utils/to-rad theta))
+   (Math/cos ^double (utils/to-rad theta))])
+
+(defn- rot-pt-2d
+  [[x y] theta]
+  (let [[s-t c-t] (sin-cos-pair theta)]
+    [(- (* x c-t) (* y s-t))
+     (+ (* y c-t) (* x s-t))]))
+
+;; this rotates a point around [0,0,0]
+(defn- rot-pt
+  [[x y z] axis theta]
+  (cond
+    (= axis :x) (into [x] (rot-pt-2d [y z] theta))
+    (= axis :y) (apply #(into [] [%2 y %1]) (rot-pt-2d [z x] theta))
+    (= axis :z) (into (rot-pt-2d [x y] theta) [z])))
+
+(defn- rotate-point
+  [pt [ax ay az]]
+  (let [pt (if (< (count pt) 3)
+             (conj pt 0)
+             pt)]
+    (-> pt
+        (rot-pt :z az)
+        (rot-pt :y ay)
+        (rot-pt :x ax))))
+
+(defn- rotate-points
+  [pts [ax ay az]]
+  (mapv #(rotate-point % [ax ay az]) pts))
+
+(defn- rotate-points2
+  [pts [ax ay az]]
+  (transduce (comp #(rot-pt % :z az)
+                   #(rot-pt % :y ay)
+                   #(rot-pt % :x ax)) conj [] pts))
+
+;; todo: do this with 4x4 tfrm matrix instead.
+(defn isometric-xf-pts
+  [pts]
+  (-> pts
+      (rotate-points origin-angle-adjust-a)
+      (rotate-points origin-angle-adjust-b)
+      (rotate-points iso-euler-angles)))
+#+end_src
+
 * compilers
 A collection of methods for exporting models.
 
@@ -3877,7 +3956,7 @@ This is based off of Matthew Farrell's work on scad-clj. The code is modified in
   (:require [clojure.java.shell :refer [sh]]
             [clojure.string :as str]
             [forge.utils :as utils]
-            [svg-clj.utils :refer [svg-str->hiccup]]
+            [svg-clj.jvm-utils :refer [svg-str->hiccup]]
             [forge.model :as mdl]))
 
 #+end_src
@@ -4883,7 +4962,6 @@ A namespace for playing around with fns
 (def b (mdl/box 200 300 100))
 #+end_src
 
-
 ** importing-svg
 #+begin_src clojure
 (ns forge.scratch
@@ -4953,54 +5031,12 @@ A namespace for playing around with fns
             [forge.brep.surfaces :as bs]
             [forge.brep.mesh :as bmesh]
             [forge.compile.scad :as scad :refer [cider-show]]
+            [forge.scene :as scene]
             [svg-clj.elements :as el]
             [svg-clj.transforms :as tf]
             [svg-clj.parametric :as p]
             [svg-clj.layout :as lo]
             [svg-clj.tools :as tools]))
-
-(def iso-euler-angles [35.264 45 0])
-(def origin-angle-adjust-a [90 0 0])
-(def origin-angle-adjust-b [0 -90 0])
-
-(defn- sin-cos-pair [theta]
-  [(Math/sin ^double (utils/to-rad theta))
-   (Math/cos ^double (utils/to-rad theta))])
-
-(defn- rot-pt-2d
-  [[x y] theta]
-  (let [[s-t c-t] (sin-cos-pair theta)]
-    [(- (* x c-t) (* y s-t))
-     (+ (* y c-t) (* x s-t))]))
-
-;; this rotates a point around [0,0,0]
-(defn- rot-pt
-  [[x y z] axis theta]
-  (cond
-    (= axis :x) (into [x] (rot-pt-2d [y z] theta))
-    (= axis :y) (apply #(into [] [%2 y %1]) (rot-pt-2d [z x] theta))
-    (= axis :z) (into (rot-pt-2d [x y] theta) [z])))
-
-(defn- rotate-point
-  [pt [ax ay az]]
-  (let [pt (if (< (count pt) 3)
-             (conj pt 0)
-             pt)]
-    (-> pt
-        (rot-pt :z az)
-        (rot-pt :y ay)
-        (rot-pt :x ax))))
-
-(defn- rotate-points
-  [pts [ax ay az]]
-  (mapv #(rotate-point % [ax ay az]) pts))
-
-(defn isometric-xf
-  [pts]
-  (-> pts
-      (rotate-points origin-angle-adjust-a)
-      (rotate-points origin-angle-adjust-b)
-      (rotate-points iso-euler-angles)))
 
 (defn svg-curve
   [curve seg]
@@ -5014,7 +5050,7 @@ A namespace for playing around with fns
 (defn- svg-single-surface
   [surface useg vseg]
   (let [{:keys [pts quads]} (bmesh/surface surface useg vseg)
-        pts (mapv drop-last (vec (isometric-xf pts)))
+        pts (mapv drop-last (vec (scene/isometric-xf pts)))
         f (fn [face]
             (let [pts (remove nil? (map #(get pts %) face))
                   normal (apply utils/normal (map utils/add-z (reverse (take 3 pts))))
@@ -5041,14 +5077,14 @@ A namespace for playing around with fns
 (defn- anim-frames! [f name framerate dur]
   (let [mkdir (sh "mkdir" "-pv" name)
         frames (int (* framerate dur))
-        framefn (fn [fr] (png! 
+        framefn (fn [fr] (png!
                           (format (str name "/%03d.png") fr)
                           (f (/ fr frames))))]
     (when (= 0 (:exit mkdir))
       (into [] (map framefn (range 1 (inc frames)))))))
 
 (defn- anim-video! [name framerate]
-  (let [ffmpeg 
+  (let [ffmpeg
         (sh "ffmpeg" "-f" "image2" "-r" (str framerate)
             "-i" (str name "/%03d.png")
             "-c:v" "libvpx-vp9" "-vf" "format=rgba"
@@ -5770,7 +5806,7 @@ A namespace for playing around with fns
          (tf/style {:fill "none" :stroke "black"})))
     (tf/scale [3 3])
     tools/cider-show)
- 
+
 #+end_src
 
 ** extrude-along-scratch
@@ -6073,3 +6109,7 @@ To destructure properly
     #_(->> (spit "asdf.txt")))
 
 #+end_src
+
+* thoughts
+I need to focus on getting things to a useful state.
+This means making sure I unify BREP/FREP under the mdl namespace, covering all of the OpenSCAD operations
